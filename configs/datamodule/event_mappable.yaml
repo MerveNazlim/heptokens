@@ -1,0 +1,62 @@
+---
+_target_: heptokens.data.event_mappable.EventSingleFileMapModule
+
+# Data path
+data_path: /path/to/event_data.h5
+
+# Split ratios (must sum to 1.0)
+train_frac: 0.7
+val_frac: 0.15
+test_frac: 0.15
+
+# Random seed for reproducible splits
+seed: 42
+
+# Number of classes (1 = no event-level classification task yet)
+n_classes: 1
+
+# DataLoader settings
+num_workers: 3
+batch_size: 1024
+pin_memory: false
+persistent_workers: false
+multiprocessing_context:
+# No transforms initially -- event-level preprocessing TBD
+transforms:
+# Dataset-specific config (passed to EventMapDataset via **data_config)
+# Optional HDF5 path for a boolean validity mask [n_events, max_objects].
+# Leave unset to treat all objects as valid.
+mask_input:
+event_inputs: # Event-level inputs not yet implemented in tokenization
+  - common/event/mu
+object_collections: 
+  - object_name: jets
+    inputs:
+    - common/jets/pt
+    - common/jets/eta
+    - common/jets/phi
+  - object_name: electrons
+    inputs:
+    - common/electrons/pt
+    - common/electrons/eta
+    - common/electrons/phi
+  - object_name: muons
+    inputs:
+    - common/muons/pt
+    - common/muons/eta
+    - common/muons/phi
+  - object_name: taus
+    inputs:
+    - common/taus/pt
+    - common/taus/eta
+    - common/taus/phi
+  - object_name: photons
+    inputs:
+    - common/photons/pt
+    - common/photons/eta
+    - common/photons/phi
+
+
+# Optional limits
+num_events:  # Use all events
+num_objects: 200  # Maximum number of objects to use per event
