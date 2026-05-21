@@ -1,0 +1,74 @@
+---
+_target_: heptokens.data.event_mappable.EventSingleFileMapModule
+
+data_path: /path/to/event_data.h5
+data_paths:
+
+train_frac: 0.7
+val_frac: 0.15
+test_frac: 0.15
+seed: 42
+n_classes: 1
+
+num_workers: 3
+batch_size: 1024
+pin_memory: false
+persistent_workers: false
+multiprocessing_context:
+transforms:
+
+# TODO(event-tokenization): this config works for prototype studies. For very
+# large samples, replace the mappable in-memory loader with a streaming loader.
+
+# Train one tokenizer for one object collection.
+# Override object_type from the command line, e.g.
+# datamodule.object_type=jets or datamodule.object_type=muons.
+output_mode: object
+object_type: jets
+mask_input:
+
+event_inputs:
+# TODO(event-tokenization): future event-aware models should consume these as
+# batch["event"] directly instead of via the compatibility batch["jets"] slot.
+  - common/event/mu
+
+object_collections:
+  - object_name: jets
+    mask_input: common/jets/mask
+    inputs:
+      - common/jets/pt
+      - common/jets/eta
+      - common/jets/phi
+
+  - object_name: electrons
+    mask_input: common/electrons/mask
+    inputs:
+      - common/electrons/pt
+      - common/electrons/eta
+      - common/electrons/phi
+
+  - object_name: muons
+    mask_input: common/muons/mask
+    inputs:
+      - common/muons/pt
+      - common/muons/eta
+      - common/muons/phi
+
+  - object_name: taus
+    mask_input: common/taus/mask
+    inputs:
+      - common/taus/pt
+      - common/taus/eta
+      - common/taus/phi
+
+  - object_name: photons
+    mask_input: common/photons/mask
+    inputs:
+      - common/photons/pt
+      - common/photons/eta
+      - common/photons/phi
+
+label_key:
+num_events:
+num_objects: 200
+max_objects:

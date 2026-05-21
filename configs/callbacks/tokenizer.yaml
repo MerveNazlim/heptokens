@@ -1,0 +1,22 @@
+---
+model_summary:
+  _target_: lightning.pytorch.callbacks.RichModelSummary
+  max_depth: 2
+lr_monitor:
+  _target_: lightning.pytorch.callbacks.LearningRateMonitor
+  logging_interval: step
+checkpoint_per_epoch:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  dirpath: ${full_path}/checkpoints
+  filename: last
+  enable_version_counter: false
+  auto_insert_metric_name: false
+checkpoint_best:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  dirpath: ${full_path}/checkpoints
+  filename: best
+  monitor: val/total_loss
+  mode: min
+  save_top_k: 1
+  enable_version_counter: false
+  auto_insert_metric_name: false
