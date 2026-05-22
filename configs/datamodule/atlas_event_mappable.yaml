@@ -1,5 +1,5 @@
 ---
-_target_: heptokens.data.event_mappable.EventSingleFileMapModule
+_target_: heptokens.data.atlas_event_mappable.AtlasEventMapModule
 
 # Data path
 data_path: /path/to/event_data.h5
@@ -25,14 +25,12 @@ persistent_workers: false
 multiprocessing_context:
 transforms:
 
-# TODO(event-tokenization): this config works for prototype studies. For very
-# large samples, replace the mappable in-memory loader with a streaming loader.
-
-# Dataset-specific config (passed to EventMapDataset via **data_config)
+# Dataset-specific config (passed to AtlasEventMapDataset via **data_config).
+# Feature paths are deliberately full HDF5 paths. Use common/..., atlas/...,
+# or a future experiment namespace in config without changing Python code.
 # Output modes:
 #   combined: one tokenizer across object types; concatenates objects into csts/mask
 #   object: one tokenizer for one object type; set object_type below
-#   separate: one tensor per object type for future joint event-tokenizer studies
 output_mode: combined
 object_type:
 
@@ -42,8 +40,8 @@ mask_input:
 
 # Event-level scalar inputs. These are stored under "jets" for compatibility
 # with existing heptokens tokenizer models.
-# TODO(event-tokenization): future event-aware models should consume these as
-# batch["event"] directly instead of via the compatibility batch["jets"] slot.
+# TODO(event-tokenization): future models should get these as
+# batch["event"] directly instead of via the batch["jets"] slot.
 event_inputs:
   - common/event/mu
 

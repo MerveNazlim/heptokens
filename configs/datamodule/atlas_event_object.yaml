@@ -1,5 +1,5 @@
 ---
-_target_: heptokens.data.event_mappable.EventSingleFileMapModule
+_target_: heptokens.data.atlas_event_mappable.AtlasEventMapModule
 
 data_path: /path/to/event_data.h5
 data_paths:
@@ -17,19 +17,18 @@ persistent_workers: false
 multiprocessing_context:
 transforms:
 
-# TODO(event-tokenization): this config works for prototype studies. For very
-# large samples, replace the mappable in-memory loader with a streaming loader.
-
 # Train one tokenizer for one object collection.
 # Override object_type from the command line, e.g.
 # datamodule.object_type=jets or datamodule.object_type=muons.
+# Feature paths are deliberately full HDF5 paths. Use common/..., atlas/...,
+# or a future experiment namespace in config without changing Python code.
 output_mode: object
 object_type: jets
 mask_input:
 
 event_inputs:
 # TODO(event-tokenization): future event-aware models should consume these as
-# batch["event"] directly instead of via the compatibility batch["jets"] slot.
+# batch["event"] directly instead of via the batch["jets"] slot.
   - common/event/mu
 
 object_collections:
