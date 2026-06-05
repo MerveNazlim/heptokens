@@ -6,7 +6,7 @@ import warnings
 import hydra
 import lightning.pytorch as pl
 import torch as T
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 
 from heptokens.utils.hydra import (
     instantiate_collection,
@@ -20,6 +20,19 @@ from heptokens.utils.hydra import (
 log = logging.getLogger(__name__)
 # Suppress torchvision image library warnings (we don't use image functionality)
 warnings.filterwarnings("ignore", message="Failed to load image Python extension")
+
+
+def feature_names_from_datamodule(cfg: DictConfig) -> list[str] | None:
+    """Best-effort feature names for tokenizer diagnostics."""
+    datamodule = OmegaConf.to_container(cfg.datamodule, resolve=True)
+    collections = datamodule.get("object_collections") or []
+    object_type = datamodule.get("object_type")
+    if datamodule.get("output_mode") != "object" or object_type is None:
+        return None
+    for collection in collections:
+        if collection.get("object_name") == object_type:
+            return [str(path).split("/")[-1] for path in collection.get("inputs") or []]
+    return None
 
 
 @hydra.main(version_base=None, config_path="../configs", config_name="train.yaml")
@@ -53,6 +66,7 @@ def main(cfg: DictConfig) -> None:
             cfg.model,
             data_sample=datamodule.get_data_sample(),
             n_classes=datamodule.get_n_classes(),
+            feature_names=feature_names_from_datamodule(cfg),
         )
 
     if cfg.compile:

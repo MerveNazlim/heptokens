@@ -2,8 +2,10 @@
 
 import logging
 from typing import Dict, Tuple
+import re
 
 import torch
+import torch.nn.functional as F
 from lightning import LightningModule
 from vector_quantize_pytorch import ResidualVQ
 
@@ -42,6 +44,7 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         reconstruction_weight: float = 1.0,
         optimizer=None,
         scheduler=None,
+        feature_names: list[str] | None = None,
         data_sample: torch.Tensor = None,
         **kwargs,
     ):
@@ -50,6 +53,7 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
 
         self.learning_rate = learning_rate
         self.reconstruction_weight = reconstruction_weight
+        self.feature_names = feature_names or []
 
         # Infer input dimension from data_sample if provided
         if data_sample is not None:
@@ -69,6 +73,81 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
             num_quantizers=num_quantizers,
             commitment=commitment_weight,
         )
+
+    @staticmethod
+    def _metric_name(text: str) -> str:
+        text = text.split("/")[-1]
+        text = re.sub(r"[^A-Za-z0-9_]+", "_", text)
+        return text.strip("_") or "feature"
+
+    def _feature_name(self, idx: int) -> str:
+        if idx < len(self.feature_names):
+            return self._metric_name(str(self.feature_names[idx]))
+        return f"feature_{idx}"
+
+    def _reconstruction_loss_and_prediction(
+        self,
+        z_q: torch.Tensor,
+        batch: Dict[str, torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        reconstruction = self.decode(z_q, batch)
+        mask = batch["mask"].bool()
+        return F.l1_loss(reconstruction[mask], batch["csts"][mask]), reconstruction
+
+    def _log_feature_reconstruction(
+        self,
+        prefix: str,
+        reconstruction: torch.Tensor,
+        batch: Dict[str, torch.Tensor],
+    ) -> None:
+        mask = batch["mask"].bool()
+        original = batch["csts"][mask]
+        reconstructed = reconstruction[mask]
+        if original.numel() == 0:
+            return
+
+        residual = reconstructed - original
+        mae = residual.abs().mean(dim=0)
+        rmse = torch.sqrt((residual**2).mean(dim=0))
+        bias = residual.mean(dim=0)
+        for idx in range(original.shape[-1]):
+            name = self._feature_name(idx)
+            self.log(f"{prefix}/feature_mae/{name}", mae[idx], on_step=False, on_epoch=True)
+            self.log(f"{prefix}/feature_rmse/{name}", rmse[idx], on_step=False, on_epoch=True)
+            self.log(f"{prefix}/feature_bias/{name}", bias[idx], on_step=False, on_epoch=True)
+
+    def _log_codebook_usage(self, prefix: str, indices: torch.Tensor) -> None:
+        codebook_size = int(self.hparams.codebook_size)
+        for quantizer_idx in range(indices.shape[-1]):
+            values = indices[..., quantizer_idx]
+            values = values[values >= 0]
+            if values.numel() == 0:
+                continue
+
+            counts = torch.bincount(values, minlength=codebook_size).float()
+            used = (counts > 0).sum().float()
+            probs = counts[counts > 0] / counts.sum()
+            entropy = -(probs * torch.log(probs)).sum()
+            perplexity = torch.exp(entropy)
+
+            self.log(
+                f"{prefix}/codebook/q{quantizer_idx}_used_codes",
+                used,
+                on_step=False,
+                on_epoch=True,
+            )
+            self.log(
+                f"{prefix}/codebook/q{quantizer_idx}_used_fraction",
+                used / codebook_size,
+                on_step=False,
+                on_epoch=True,
+            )
+            self.log(
+                f"{prefix}/codebook/q{quantizer_idx}_perplexity",
+                perplexity,
+                on_step=False,
+                on_epoch=True,
+            )
 
     def encode(
         self, batch: Dict[str, torch.Tensor]
@@ -138,7 +217,7 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         z_q, indices, commit_loss = self.encode(batch)
 
         # Compute reconstruction loss
-        recon_loss = self.decoder.compute_loss(z_q, batch)
+        recon_loss, reconstruction = self._reconstruction_loss_and_prediction(z_q, batch)
 
         # Total loss
         total_loss = self.reconstruction_weight * recon_loss + commit_loss
@@ -148,18 +227,8 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         self.log("train/recon_loss", recon_loss, prog_bar=True)
         self.log("train/commit_loss", commit_loss, prog_bar=True)
 
-        # TODO: put this back later
-        # # Log codebook usage
-        # unique_codes_per_quantizer = []
-        # for q in range(indices.shape[-1]):
-        #     unique_codes = indices[:, q].unique().numel()
-        #     unique_codes_per_quantizer.append(unique_codes)
-        #     self.log(f"train/unique_codes_q{q}", float(unique_codes))
-
-        # self.log(
-        #     "train/avg_unique_codes",
-        #     float(sum(unique_codes_per_quantizer) / len(unique_codes_per_quantizer)),
-        # )
+        self._log_feature_reconstruction("train", reconstruction, batch)
+        self._log_codebook_usage("train", indices)
 
         return total_loss
 
@@ -171,10 +240,7 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         z_q, indices, commit_loss = self.encode(batch)
 
         # Compute reconstruction loss
-        recon_loss = self.decoder.compute_loss(z_q, batch)
-
-        # TODO: plot some reconstructions?
-        # reconstruction = self.decode(z_q, batch)
+        recon_loss, reconstruction = self._reconstruction_loss_and_prediction(z_q, batch)
 
         # Total loss
         total_loss = self.reconstruction_weight * recon_loss + commit_loss
@@ -183,6 +249,8 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         self.log("val/total_loss", total_loss, prog_bar=True)
         self.log("val/recon_loss", recon_loss, prog_bar=True)
         self.log("val/commit_loss", commit_loss, prog_bar=True)
+        self._log_feature_reconstruction("val", reconstruction, batch)
+        self._log_codebook_usage("val", indices)
 
         return {"val_loss": total_loss, "indices": indices}
 

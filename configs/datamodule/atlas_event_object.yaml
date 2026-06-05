@@ -39,17 +39,17 @@ object_collections:
       - common/jets/pt
       - common/jets/eta
       - common/jets/phi
-      # - common/jets/mass
-      # - common/jets/n_trk
-      # - atlas/jets/QG_nTracks
-      # - atlas/jets/QG_tracksWidth
-      # - atlas/jets/QG_tracksC1
-      # - atlas/jets/DL1d_pb
-      # - atlas/jets/DL1d_pc
-      # - atlas/jets/DL1d_pu
-      # - atlas/jets/GN2_pb
-      # - atlas/jets/GN2_pc
-      # - atlas/jets/GN2_pu
+      - common/jets/mass
+      - common/jets/n_trk
+      - atlas/jets/QG_nTracks
+      - atlas/jets/QG_tracksWidth
+      - atlas/jets/QG_tracksC1
+      - atlas/jets/DL1d_pb
+      - atlas/jets/DL1d_pc
+      - atlas/jets/DL1d_pu
+      - atlas/jets/GN2_pb
+      - atlas/jets/GN2_pc
+      - atlas/jets/GN2_pu
 
   - object_name: electrons
     mask_input: common/electrons/mask
@@ -57,11 +57,11 @@ object_collections:
       - common/electrons/pt
       - common/electrons/eta
       - common/electrons/phi
-      # - common/electrons/charge
+      - common/electrons/charge
       # - common/electrons/trk_iso03
       # - atlas/electrons/LHLoose
-      # - atlas/electrons/LHMedium
-      # - atlas/electrons/LHTight
+      - atlas/electrons/LHMedium
+      - atlas/electrons/LHTight
 
   - object_name: muons
     mask_input: common/muons/mask
@@ -69,10 +69,10 @@ object_collections:
       - common/muons/pt
       - common/muons/eta
       - common/muons/phi
-      # - common/muons/charge
-      # - common/muons/trk_iso03
-      # - atlas/muons/quality
-      # - atlas/muons/muonType
+      - common/muons/charge
+      - common/muons/trk_iso03
+      - atlas/muons/quality
+      - atlas/muons/muonType
 
   - object_name: taus
     mask_input: common/taus/mask
@@ -80,11 +80,11 @@ object_collections:
       - common/taus/pt
       - common/taus/eta
       - common/taus/phi
-      # - common/taus/charge
-      # - common/taus/is_1prong
-      # - atlas/taus/NNDecayMode
-      # - atlas/taus/RNNJetScore
-      # - atlas/taus/RNNEleScore
+      - common/taus/charge
+      - common/taus/is_1prong
+      - atlas/taus/NNDecayMode
+      - atlas/taus/RNNJetScore
+      - atlas/taus/RNNEleScore
 
   - object_name: photons
     mask_input: common/photons/mask
@@ -92,9 +92,9 @@ object_collections:
       - common/photons/pt
       - common/photons/eta
       - common/photons/phi
-      # - common/photons/trk_iso03
-      # - atlas/photons/isLoose
-      # - atlas/photons/isTight
+      - common/photons/trk_iso03
+      - atlas/photons/isLoose
+      - atlas/photons/isTight
 
 label_key:
 num_events:
