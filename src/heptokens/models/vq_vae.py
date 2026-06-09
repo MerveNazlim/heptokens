@@ -45,6 +45,12 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         optimizer=None,
         scheduler=None,
         feature_names: list[str] | None = None,
+        dead_code_reset: bool = False,
+        dead_code_reset_interval: int = 1000,
+        dead_code_reset_min_count: int = 0,
+        dead_code_reset_max_fraction: float = 0.25,
+        dead_code_reset_quantizers: list[int] | None = None,
+        dead_code_reset_sample_size: int = 4096,
         data_sample: torch.Tensor = None,
         **kwargs,
     ):
@@ -73,6 +79,12 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
             num_quantizers=num_quantizers,
             commitment=commitment_weight,
         )
+        self.register_buffer(
+            "_dead_code_usage",
+            torch.zeros(num_quantizers, codebook_size),
+            persistent=False,
+        )
+        self._dead_code_reset_sample: torch.Tensor | None = None
 
     @staticmethod
     def _metric_name(text: str) -> str:
@@ -149,6 +161,146 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
                 on_epoch=True,
             )
 
+    def _quantizers_to_reset(self) -> set[int]:
+        configured = self.hparams.dead_code_reset_quantizers
+        if configured is None:
+            return {0}
+        return {int(idx) for idx in configured}
+
+    @staticmethod
+    def _assign_codebook_rows(tensor: torch.Tensor, indices: torch.Tensor, values: torch.Tensor) -> None:
+        if tensor.ndim == 2:
+            tensor.data[indices] = values.to(tensor.device, dtype=tensor.dtype)
+        elif tensor.ndim == 3:
+            tensor.data[:, indices, :] = values.to(tensor.device, dtype=tensor.dtype)
+
+    @staticmethod
+    def _assign_cluster_rows(tensor: torch.Tensor, indices: torch.Tensor, value: float = 1.0) -> None:
+        if tensor.ndim == 1:
+            tensor.data[indices] = value
+        elif tensor.ndim == 2:
+            tensor.data[:, indices] = value
+
+    def _reset_layer_codes(
+        self,
+        layer: torch.nn.Module,
+        dead_indices: torch.Tensor,
+        replacements: torch.Tensor,
+    ) -> int:
+        codebook = getattr(layer, "_codebook", layer)
+        row_attrs = ("embed", "codebook", "weight", "embed_avg", "ema_embed", "ema_embedding")
+        cluster_attrs = ("cluster_size", "ema_cluster_size")
+        touched = 0
+
+        for attr in row_attrs:
+            tensor = getattr(codebook, attr, None)
+            if torch.is_tensor(tensor) and tensor.shape[-2:] == (
+                int(self.hparams.codebook_size),
+                int(self.hparams.codebook_dim),
+            ):
+                self._assign_codebook_rows(tensor, dead_indices, replacements)
+                touched += 1
+
+        embedding = getattr(codebook, "embedding", None)
+        if embedding is not None and hasattr(embedding, "weight"):
+            self._assign_codebook_rows(embedding.weight, dead_indices, replacements)
+            touched += 1
+
+        for attr in cluster_attrs:
+            tensor = getattr(codebook, attr, None)
+            if torch.is_tensor(tensor) and tensor.shape[-1] == int(self.hparams.codebook_size):
+                self._assign_cluster_rows(tensor, dead_indices)
+
+        return touched
+
+    def _track_dead_code_usage(
+        self,
+        z_e: torch.Tensor,
+        indices: torch.Tensor,
+        batch: Dict[str, torch.Tensor],
+    ) -> None:
+        if not self.hparams.dead_code_reset:
+            return
+
+        mask = batch["mask"].bool()
+        valid_z = z_e[mask].detach()
+        if valid_z.numel() == 0:
+            return
+
+        sample_size = int(self.hparams.dead_code_reset_sample_size)
+        if len(valid_z) > sample_size:
+            selected = torch.randperm(len(valid_z), device=valid_z.device)[:sample_size]
+            valid_z = valid_z[selected]
+        self._dead_code_reset_sample = valid_z
+
+        codebook_size = int(self.hparams.codebook_size)
+        for quantizer_idx in range(indices.shape[-1]):
+            values = indices[..., quantizer_idx]
+            values = values[values >= 0]
+            if values.numel() == 0:
+                continue
+            counts = torch.bincount(values, minlength=codebook_size).to(self._dead_code_usage)
+            self._dead_code_usage[quantizer_idx] += counts
+
+    def _reset_dead_codes(self) -> tuple[int, dict[int, dict[str, int]]]:
+        sample = self._dead_code_reset_sample
+        if sample is None or sample.numel() == 0:
+            return 0, {}
+
+        layers = getattr(self.vector_quantization, "layers", None)
+        if layers is None:
+            log.warning("Dead-code reset is enabled, but ResidualVQ layers were not found")
+            return 0, {}
+
+        min_count = int(self.hparams.dead_code_reset_min_count)
+        max_fraction = float(self.hparams.dead_code_reset_max_fraction)
+        codebook_size = int(self.hparams.codebook_size)
+        max_reset = max(1, int(codebook_size * max_fraction))
+        reset_quantizers = self._quantizers_to_reset()
+        n_reset = 0
+        reset_stats = {}
+
+        with torch.no_grad():
+            for quantizer_idx, layer in enumerate(layers):
+                if quantizer_idx not in reset_quantizers:
+                    continue
+
+                dead = torch.nonzero(
+                    self._dead_code_usage[quantizer_idx] <= min_count,
+                    as_tuple=False,
+                ).flatten()
+                dead_before_reset = int(dead.numel())
+                reset_stats[quantizer_idx] = {
+                    "dead_before_reset": dead_before_reset,
+                    "codes_reset": 0,
+                }
+                if dead.numel() == 0:
+                    continue
+                if dead.numel() > max_reset:
+                    dead = dead[torch.randperm(dead.numel(), device=dead.device)[:max_reset]]
+
+                replacement_idx = torch.randint(
+                    0,
+                    len(sample),
+                    (dead.numel(),),
+                    device=sample.device,
+                )
+                replacements = sample[replacement_idx]
+                touched = self._reset_layer_codes(layer, dead.to(sample.device), replacements)
+                if touched > 0:
+                    codes_reset = int(dead.numel())
+                    n_reset += codes_reset
+                    reset_stats[quantizer_idx]["codes_reset"] = codes_reset
+                else:
+                    log.warning(
+                        "Dead-code reset found no writable codebook tensor for quantizer %s",
+                        quantizer_idx,
+                    )
+
+        self._dead_code_usage.zero_()
+        self._dead_code_reset_sample = None
+        return n_reset, reset_stats
+
     def encode(
         self, batch: Dict[str, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -176,6 +328,15 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         indices = indices.masked_fill(~batch["mask"].unsqueeze(-1), -1)
 
         return z_q, indices, commit_loss.mean()
+
+    def encode_with_encoder_output(
+        self, batch: Dict[str, torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        z_e = self.encoder(batch)
+        z_q, indices_batched, commit_loss = self.vector_quantization(z_e)
+        indices = indices_batched.permute(1, 2, 0).contiguous()
+        indices = indices.masked_fill(~batch["mask"].unsqueeze(-1), -1)
+        return z_q, indices, commit_loss.mean(), z_e
 
     def decode(self, z_q: torch.Tensor, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Decode quantized embeddings.
@@ -214,7 +375,8 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
             Total loss tensor
         """
         # Encode
-        z_q, indices, commit_loss = self.encode(batch)
+        z_q, indices, commit_loss, z_e = self.encode_with_encoder_output(batch)
+        self._track_dead_code_usage(z_e, indices, batch)
 
         # Compute reconstruction loss
         recon_loss, reconstruction = self._reconstruction_loss_and_prediction(z_q, batch)
@@ -231,6 +393,39 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         self._log_codebook_usage("train", indices)
 
         return total_loss
+
+    def on_train_batch_end(self, outputs, batch, batch_idx: int) -> None:
+        if not self.hparams.dead_code_reset:
+            return
+        interval = int(self.hparams.dead_code_reset_interval)
+        if interval <= 0 or self.global_step == 0 or self.global_step % interval != 0:
+            return
+
+        n_reset, reset_stats = self._reset_dead_codes()
+        self.log("train/codebook/dead_codes_reset", float(n_reset), on_step=True, on_epoch=False)
+        codebook_size = int(self.hparams.codebook_size)
+        for quantizer_idx, stats in reset_stats.items():
+            dead_before_reset = stats["dead_before_reset"]
+            self.log(
+                f"train/codebook/q{quantizer_idx}_dead_before_reset",
+                float(dead_before_reset),
+                on_step=True,
+                on_epoch=False,
+            )
+            self.log(
+                f"train/codebook/q{quantizer_idx}_dead_fraction_before_reset",
+                dead_before_reset / codebook_size,
+                on_step=True,
+                on_epoch=False,
+            )
+            self.log(
+                f"train/codebook/q{quantizer_idx}_codes_reset",
+                float(stats["codes_reset"]),
+                on_step=True,
+                on_epoch=False,
+            )
+        if n_reset > 0:
+            log.info("Reset %s dead codebook entries at step %s", n_reset, self.global_step)
 
     def validation_step(
         self, batch: Dict[str, torch.Tensor], batch_idx: int

@@ -18,6 +18,12 @@ decoder:
 codebook_size: 512
 codebook_dim: 6
 num_quantizers: 3
+dead_code_reset: false
+dead_code_reset_interval: 1000
+dead_code_reset_min_count: 0
+dead_code_reset_max_fraction: 0.25
+dead_code_reset_quantizers:
+dead_code_reset_sample_size: 4096
 learning_rate: 1e-3
 optimizer:
   _target_: torch.optim.Adam
