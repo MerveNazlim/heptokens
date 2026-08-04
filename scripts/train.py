@@ -1,5 +1,6 @@
 """Basic training script."""
 
+import inspect
 import logging
 import warnings
 
@@ -62,12 +63,14 @@ def main(cfg: DictConfig) -> None:
         model_class = hydra.utils.get_class(cfg.model._target_)
         model = model_class.load_from_checkpoint(cfg.ckpt_path, map_location="cpu")
     else:
-        model = hydra.utils.instantiate(
-            cfg.model,
-            data_sample=datamodule.get_data_sample(),
-            n_classes=datamodule.get_n_classes(),
-            feature_names=feature_names_from_datamodule(cfg),
-        )
+        model_class = hydra.utils.get_class(cfg.model._target_)
+        model_kwargs = {
+            "data_sample": datamodule.get_data_sample(),
+            "n_classes": datamodule.get_n_classes(),
+        }
+        if "feature_names" in inspect.signature(model_class.__init__).parameters:
+            model_kwargs["feature_names"] = feature_names_from_datamodule(cfg)
+        model = hydra.utils.instantiate(cfg.model, **model_kwargs)
 
     if cfg.compile:
         log.info(f"Compiling the model using torch 2.0: {cfg.compile}")

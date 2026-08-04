@@ -1,15 +1,16 @@
 ---
 _target_: heptokens.data.token_parquet.TokenParquetPretrainModule
 
-parquet_files:
-  - vqvae_signal.parquet
-  - vqvae_background.parquet
-  - vqvae_data.parquet
+prepared_dir:
+train_parquet_files:
+val_parquet_files:
+parquet_files:  # Deprecated raw inputs; prepare train/val shards first.
 
 train_frac: 0.9
 val_frac: 0.1
 seed: 42
 max_sequences:
+stream_batch_size: 4096
 
 n_classes: 1
 num_workers: 3

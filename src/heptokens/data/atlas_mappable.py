@@ -8,7 +8,7 @@ import h5py
 import numpy as np
 import torch
 from lightning import LightningDataModule
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset, Sampler, random_split
 
 from heptokens.data.collation import collate_and_transform
 from heptokens.utils.plot_physics import JET_FEATURES, TRACK_FEATURES, load_jets_table
@@ -148,7 +148,13 @@ class BaseMapModule(LightningDataModule, ABC):
         """Subclasses must implement dataset setup."""
         pass
 
-    def _get_dataloader(self, dataset: Dataset, shuffle: bool, drop_last: bool) -> DataLoader:
+    def _get_dataloader(
+        self,
+        dataset: Dataset,
+        shuffle: bool,
+        drop_last: bool,
+        sampler: Sampler | None = None,
+    ) -> DataLoader:
         """Internal helper to create dataloaders."""
         collate_fn = None
         if self.transforms is not None:
@@ -165,14 +171,20 @@ class BaseMapModule(LightningDataModule, ABC):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            shuffle=shuffle,
+            shuffle=shuffle if sampler is None else False,
+            sampler=sampler,
             drop_last=drop_last,
             collate_fn=collate_fn,
             **dataloader_kwargs,
         )
 
     def train_dataloader(self) -> DataLoader:
-        return self._get_dataloader(self.train_set, shuffle=True, drop_last=True)
+        return self._get_dataloader(
+            self.train_set,
+            shuffle=True,
+            drop_last=True,
+            sampler=getattr(self, "train_sampler", None),
+        )
 
     def val_dataloader(self) -> DataLoader:
         return self._get_dataloader(self.valid_set, shuffle=False, drop_last=False)

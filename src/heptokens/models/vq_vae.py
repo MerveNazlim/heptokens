@@ -45,6 +45,10 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         optimizer=None,
         scheduler=None,
         feature_names: list[str] | None = None,
+        feature_loss_weights: list[float] | None = None,
+        data_codebook_init: bool = False,
+        data_codebook_init_samples: int = 65536,
+        data_codebook_init_quantizers: list[int] | None = None,
         dead_code_reset: bool = False,
         dead_code_reset_interval: int = 1000,
         dead_code_reset_min_count: int = 0,
@@ -60,6 +64,7 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         self.learning_rate = learning_rate
         self.reconstruction_weight = reconstruction_weight
         self.feature_names = feature_names or []
+        self.feature_loss_weights = feature_loss_weights
 
         # Infer input dimension from data_sample if provided
         if data_sample is not None:
@@ -84,6 +89,13 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
             torch.zeros(num_quantizers, codebook_size),
             persistent=False,
         )
+        self.register_buffer(
+            "_data_codebook_initialized",
+            torch.tensor(not data_codebook_init, dtype=torch.bool),
+            persistent=False,
+        )
+        self._data_codebook_init_samples: list[torch.Tensor] = []
+        self._data_codebook_init_sample_count = 0
         self._dead_code_reset_sample: torch.Tensor | None = None
 
     @staticmethod
@@ -104,7 +116,31 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         reconstruction = self.decode(z_q, batch)
         mask = batch["mask"].bool()
-        return F.l1_loss(reconstruction[mask], batch["csts"][mask]), reconstruction
+        reconstructed = reconstruction[mask]
+        original = batch["csts"][mask]
+
+        if self.feature_loss_weights is None:
+            return F.l1_loss(reconstructed, original), reconstruction
+
+        weights = torch.as_tensor(
+            self.feature_loss_weights,
+            device=reconstructed.device,
+            dtype=reconstructed.dtype,
+        )
+        n_features = reconstructed.shape[-1]
+        if weights.ndim != 1 or weights.numel() != n_features:
+            raise ValueError(
+                "feature_loss_weights must contain one value per input feature: "
+                f"got {weights.numel()} weights for {n_features} features"
+            )
+        if not torch.isfinite(weights).all() or torch.any(weights <= 0):
+            raise ValueError("feature_loss_weights must contain finite, positive values")
+
+        # Preserve the overall reconstruction-loss scale so this changes only
+        # relative feature importance, not its balance against commitment loss.
+        weights = weights / weights.mean()
+        reconstruction_loss = ((reconstructed - original).abs() * weights).mean()
+        return reconstruction_loss, reconstruction
 
     def _log_feature_reconstruction(
         self,
@@ -163,6 +199,12 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
 
     def _quantizers_to_reset(self) -> set[int]:
         configured = self.hparams.dead_code_reset_quantizers
+        if configured is None:
+            return {0}
+        return {int(idx) for idx in configured}
+
+    def _quantizers_to_initialize(self) -> set[int]:
+        configured = self.hparams.data_codebook_init_quantizers
         if configured is None:
             return {0}
         return {int(idx) for idx in configured}
@@ -241,6 +283,80 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
                 continue
             counts = torch.bincount(values, minlength=codebook_size).to(self._dead_code_usage)
             self._dead_code_usage[quantizer_idx] += counts
+
+    def _collect_data_codebook_init_samples(
+        self,
+        z_e: torch.Tensor,
+        batch: Dict[str, torch.Tensor],
+    ) -> None:
+        if bool(self._data_codebook_initialized):
+            return
+
+        valid_z = z_e[batch["mask"].bool()].detach()
+        if valid_z.numel() == 0:
+            return
+
+        target = max(
+            int(self.hparams.data_codebook_init_samples),
+            int(self.hparams.codebook_size),
+        )
+        remaining = target - self._data_codebook_init_sample_count
+        if remaining <= 0:
+            return
+        if len(valid_z) > remaining:
+            selected = torch.randperm(len(valid_z), device=valid_z.device)[:remaining]
+            valid_z = valid_z[selected]
+
+        self._data_codebook_init_samples.append(valid_z)
+        self._data_codebook_init_sample_count += len(valid_z)
+
+    def _initialize_codebooks_from_data(self) -> int:
+        if bool(self._data_codebook_initialized):
+            return 0
+
+        target = max(
+            int(self.hparams.data_codebook_init_samples),
+            int(self.hparams.codebook_size),
+        )
+        if self._data_codebook_init_sample_count < target:
+            return 0
+
+        layers = getattr(self.vector_quantization, "layers", None)
+        if layers is None:
+            log.warning("Data codebook initialization is enabled, but ResidualVQ layers were not found")
+            return 0
+
+        samples = torch.cat(self._data_codebook_init_samples, dim=0)
+        codebook_size = int(self.hparams.codebook_size)
+        selected = torch.randperm(len(samples), device=samples.device)[:codebook_size]
+        replacements = samples[selected]
+        code_indices = torch.arange(codebook_size, device=samples.device)
+        initialized = 0
+
+        with torch.no_grad():
+            for quantizer_idx, layer in enumerate(layers):
+                if quantizer_idx not in self._quantizers_to_initialize():
+                    continue
+                touched = self._reset_layer_codes(layer, code_indices, replacements)
+                if touched > 0:
+                    initialized += codebook_size
+                else:
+                    log.warning(
+                        "Data initialization found no writable codebook tensor for quantizer %s",
+                        quantizer_idx,
+                    )
+
+        if initialized > 0:
+            self._data_codebook_initialized.fill_(True)
+            log.info(
+                "Initialized %s codebook entries from %s encoder outputs at step %s",
+                initialized,
+                len(samples),
+                self.global_step,
+            )
+        self._data_codebook_init_samples.clear()
+        self._data_codebook_init_sample_count = 0
+        return initialized
 
     def _reset_dead_codes(self) -> tuple[int, dict[int, dict[str, int]]]:
         sample = self._dead_code_reset_sample
@@ -376,6 +492,7 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         """
         # Encode
         z_q, indices, commit_loss, z_e = self.encode_with_encoder_output(batch)
+        self._collect_data_codebook_init_samples(z_e, batch)
         self._track_dead_code_usage(z_e, indices, batch)
 
         # Compute reconstruction loss
@@ -395,6 +512,15 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         return total_loss
 
     def on_train_batch_end(self, outputs, batch, batch_idx: int) -> None:
+        initialized = self._initialize_codebooks_from_data()
+        if initialized > 0:
+            self.log(
+                "train/codebook/data_initialized_codes",
+                float(initialized),
+                on_step=True,
+                on_epoch=False,
+            )
+
         if not self.hparams.dead_code_reset:
             return
         interval = int(self.hparams.dead_code_reset_interval)

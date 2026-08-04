@@ -18,6 +18,9 @@ decoder:
 codebook_size: 512
 codebook_dim: 6
 num_quantizers: 3
+data_codebook_init: false
+data_codebook_init_samples: 65536
+data_codebook_init_quantizers:
 dead_code_reset: false
 dead_code_reset_interval: 1000
 dead_code_reset_min_count: 0
@@ -25,6 +28,9 @@ dead_code_reset_max_fraction: 0.25
 dead_code_reset_quantizers:
 dead_code_reset_sample_size: 4096
 learning_rate: 1e-3
+# Optional relative L1 weights in datamodule feature order. The model normalizes
+# supplied weights to mean one, preserving the global reconstruction-loss scale.
+feature_loss_weights:
 optimizer:
   _target_: torch.optim.Adam
   _partial_: true

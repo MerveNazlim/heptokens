@@ -1,13 +1,14 @@
 ---
-_target_: heptokens.data.atlas_event_mappable.AtlasEventMapModule
+_target_: heptokens.data.atlas_event_iterable.AtlasEventObjectIterableModule
 
 data_path: /path/to/event_data.h5
 data_paths:
 data_domains:
 
-# Optional domain-aware training sampler. With valid_objects balancing, the
-# requested fractions refer to expected valid-object contributions to the
-# reconstruction loss, rather than file or event counts.
+# This iterable loader uses random file-level splits instead of loading all
+# events and doing a global random event split. If data_domains is unset, files
+# under a realdata directory are treated as data and the rest as MC.
+split_by_domain: true
 sampling_domain_fractions:
 sampling_balance_by: valid_objects
 sampling_num_samples:
@@ -23,21 +24,9 @@ batch_size: 1024
 pin_memory: false
 persistent_workers: false
 multiprocessing_context:
+chunk_size: 4096
 transforms: {}
-# Example for a fitted object-feature transformer:
-# transforms:
-#   preprocess:
-#     _target_: heptokens.data.collation.preprocess_objects_batch
-#     _partial_: true
-#     cst_fn:
-#       _target_: joblib.load
-#       filename: /absolute/path/to/jets_log_standard.joblib
 
-# Train one tokenizer for one object collection.
-# Override object_type from the command line, e.g.
-# datamodule.object_type=jets or datamodule.object_type=muons.
-# Feature paths are deliberately full HDF5 paths. Use common/..., atlas/...,
-# or a future experiment namespace in config without changing Python code.
 output_mode: object
 object_type: jets
 mask_input:

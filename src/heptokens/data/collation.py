@@ -101,6 +101,47 @@ def preprocess_batch(
     return jet_dict
 
 
+def preprocess_objects_batch(
+    jet_dict: dict[T.Tensor],
+    cst_fn: BaseEstimator,
+) -> dict:
+    """Preprocess object-tokenizer features.
+
+    Atlas object-tokenizer batches store the per-object inputs in ``csts`` and
+    validity in ``mask``. Event inputs live in ``jets`` but are not used by the
+    VQ-VAE tokenizer, so this transform intentionally touches only ``csts``.
+    """
+    csts = jet_dict["csts"]
+    mask = jet_dict["mask"]
+
+    csts_np = csts.detach().cpu().numpy().copy() if isinstance(csts, T.Tensor) else csts.copy()
+    mask_np = mask.cpu().numpy() if isinstance(mask, T.Tensor) else mask
+
+    if mask_np.any():
+        csts_np[mask_np] = cst_fn.transform(csts_np[mask_np])
+
+    jet_dict = jet_dict.copy()
+    jet_dict["csts"] = T.from_numpy(csts_np).float()
+    return jet_dict
+
+
+def inverse_preprocess_objects_batch(
+    jet_dict: dict[T.Tensor],
+    cst_fn: BaseEstimator,
+) -> dict:
+    """Invert object-tokenizer preprocessing on valid ``csts`` entries."""
+    csts = jet_dict["csts"].clone()
+    mask = jet_dict["mask"]
+
+    if mask.any():
+        inverse_csts = cst_fn.inverse_transform(csts[mask].cpu().numpy())
+        csts[mask] = T.from_numpy(inverse_csts).float()
+
+    jet_dict_inverse = jet_dict.copy()
+    jet_dict_inverse["csts"] = csts
+    return jet_dict_inverse
+
+
 def inverse_preprocess_batch(
     jet_dict: dict[T.Tensor],
     cst_fn: BaseEstimator,
