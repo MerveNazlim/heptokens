@@ -1,0 +1,30 @@
+---
+_target_: heptokens.models.foundation_grouped.LitGroupedMaskedSequenceModel
+
+hidden_dim: 256
+num_heads: 8
+num_layers: 4
+dropout: 0.1
+max_seq_length: 256
+vocab_size: 20000
+max_quantizers: 8
+quantizer_embedding_dim: 32
+num_type_ids: 12
+mask_token_id: 3
+pad_token_id: 0
+mask_prob: 0.15
+use_type_embedding: true
+use_position_embedding: true
+quantizer_decoder: parallel
+learning_rate: 1.0e-4
+
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1.0e-4
+  weight_decay: 1.0e-2
+scheduler:
+  _target_: heptokens.models.utils.warmup_cosine_scheduler
+  _partial_: true
+  warmup_epochs: 1
+  min_lr: 1.0e-6
