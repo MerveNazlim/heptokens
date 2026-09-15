@@ -11,6 +11,9 @@ val_frac: 0.1
 seed: 42
 max_sequences:
 stream_batch_size: 4096
+# Per DataLoader worker. At sequence length 256 this is roughly 35 MiB of
+# token/mask/type tensors and mixes examples across multiple row groups.
+shuffle_buffer_size: 8192
 
 n_classes: 1
 num_workers: 3

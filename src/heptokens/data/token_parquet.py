@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 import time
 from dataclasses import dataclass
@@ -34,6 +35,16 @@ from heptokens.data.collation import collate_and_transform
 
 log = logging.getLogger(__name__)
 NUM_WORKERS = 0 if platform.system() == "Darwin" else 2
+TOKEN_VOCABULARY_METADATA_KEY = b"heptokens_token_vocabulary"
+
+
+def _read_token_vocabulary(parquet_path: str) -> dict | None:
+    """Read the grouped-token vocabulary stored in Parquet schema metadata."""
+    import pyarrow.parquet as pq
+
+    metadata = pq.ParquetFile(parquet_path).schema_arrow.metadata or {}
+    encoded = metadata.get(TOKEN_VOCABULARY_METADATA_KEY)
+    return json.loads(encoded) if encoded is not None else None
 
 
 class TokenParquetDataset(Dataset):
@@ -116,6 +127,7 @@ class _ParquetFileSpec:
     token_column: str
     mask_column: str
     type_column: str | None
+    label_column: str | None
     global_offset: int
 
 
@@ -135,9 +147,33 @@ def _sequence_array_to_numpy(array, dtype: np.dtype) -> np.ndarray:
     import pyarrow as pa
 
     if pa.types.is_fixed_size_list(array.type):
+        if pa.types.is_list(array.type.value_type) or pa.types.is_fixed_size_list(
+            array.type.value_type
+        ):
+            return np.asarray(array.to_pylist(), dtype=dtype)
         values = np.asarray(array.values.to_numpy(zero_copy_only=False), dtype=dtype)
         return values.reshape(len(array), array.type.list_size)
     return np.asarray(array.to_pylist(), dtype=dtype)
+
+
+def _bounded_shuffle(items, *, buffer_size: int, rng: np.random.Generator):
+    """Yield every item once in bounded-memory, approximately shuffled order."""
+    if buffer_size <= 1:
+        yield from items
+        return
+
+    buffer = []
+    for item in items:
+        if len(buffer) < buffer_size:
+            buffer.append(item)
+            continue
+        index = int(rng.integers(buffer_size))
+        outgoing = buffer[index]
+        buffer[index] = item
+        yield outgoing
+
+    rng.shuffle(buffer)
+    yield from buffer
 
 
 class StreamingTokenParquetDataset(IterableDataset):
@@ -157,11 +193,17 @@ class StreamingTokenParquetDataset(IterableDataset):
         seed: int = 42,
         max_rows: int | None = None,
         stream_batch_size: int = 4096,
+        shuffle_buffer_size: int = 8192,
         shuffle: bool = False,
         reshuffle_each_iteration: bool = True,
         token_column: str | None = None,
         mask_column: str | None = None,
         type_column: str | None = None,
+        label_column: str | None = None,
+        require_labels: bool = False,
+        loader_num_workers: int = 0,
+        distributed_batch_size: int | None = None,
+        distributed_drop_last: bool = False,
     ) -> None:
         super().__init__()
         import pyarrow.parquet as pq
@@ -172,6 +214,8 @@ class StreamingTokenParquetDataset(IterableDataset):
             raise ValueError("Split bounds must satisfy 0 <= start < end <= 1")
         if stream_batch_size <= 0:
             raise ValueError("stream_batch_size must be positive")
+        if shuffle_buffer_size < 0:
+            raise ValueError("shuffle_buffer_size must be non-negative")
 
         specs = []
         global_offset = 0
@@ -187,6 +231,13 @@ class StreamingTokenParquetDataset(IterableDataset):
             resolved_types = type_column or first_existing_column(
                 names, ["type_ids", "token_type_ids"], required=False
             )
+            resolved_labels = label_column or first_existing_column(
+                names, ["label", "labels"], required=False
+            )
+            if require_labels and (
+                resolved_labels is None or resolved_labels not in names
+            ):
+                raise KeyError(f"Expected a label column in {path}, found {names}")
             row_group_rows = tuple(
                 parquet.metadata.row_group(index).num_rows
                 for index in range(parquet.metadata.num_row_groups)
@@ -205,6 +256,7 @@ class StreamingTokenParquetDataset(IterableDataset):
                     token_column=resolved_tokens,
                     mask_column=resolved_mask,
                     type_column=resolved_types,
+                    label_column=resolved_labels,
                     global_offset=global_offset,
                 )
             )
@@ -216,8 +268,12 @@ class StreamingTokenParquetDataset(IterableDataset):
         self.split_end = split_end
         self.seed = seed
         self.stream_batch_size = stream_batch_size
+        self.shuffle_buffer_size = shuffle_buffer_size
         self.shuffle = shuffle
         self.reshuffle_each_iteration = reshuffle_each_iteration
+        self.loader_num_workers = max(1, loader_num_workers)
+        self.distributed_batch_size = distributed_batch_size
+        self.distributed_drop_last = distributed_drop_last
         self._iteration = 0
         expected_rows = int(round(self.total_rows * (split_end - split_start)))
         self.max_rows = min(max_rows, expected_rows) if max_rows is not None else None
@@ -233,21 +289,111 @@ class StreamingTokenParquetDataset(IterableDataset):
         )
 
     def __len__(self) -> int:
-        return self.expected_rows
+        rank, world_size = self._distributed_context()
+        if world_size <= 1:
+            return self.expected_rows
+        limits = self._distributed_worker_limits(world_size, self.loader_num_workers)
+        return sum(
+            limits[worker_id * world_size + rank]
+            for worker_id in range(self.loader_num_workers)
+        )
+
+    @staticmethod
+    def _distributed_context() -> tuple[int, int]:
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_rank(), dist.get_world_size()
+        return int(os.environ.get("RANK", 0)), int(os.environ.get("WORLD_SIZE", 1))
+
+    def _assignment_work(self) -> list[tuple[int, int]]:
+        work = [
+            (file_index, row_group_index)
+            for file_index, spec in enumerate(self.specs)
+            for row_group_index in range(len(spec.row_group_rows))
+        ]
+        if self.shuffle:
+            assignment_rng = np.random.default_rng(self.seed)
+            assignment_rng.shuffle(work)
+        return work
+
+    def _distributed_worker_limits(
+        self,
+        world_size: int,
+        num_workers: int,
+    ) -> tuple[int, ...]:
+        """Return worker limits that give every DDP rank an equal epoch size."""
+        num_shards = world_size * num_workers
+        work = self._assignment_work()
+        assigned_rows = []
+        for shard_id in range(num_shards):
+            rows = sum(
+                self.specs[file_index].row_group_rows[row_group_index]
+                for file_index, row_group_index in work[shard_id::num_shards]
+            )
+            assigned_rows.append(rows)
+
+        if self.distributed_drop_last:
+            if not self.distributed_batch_size:
+                raise ValueError(
+                    "distributed_batch_size is required when distributed_drop_last=True"
+                )
+            unit = self.distributed_batch_size
+            assigned_units = [rows // unit for rows in assigned_rows]
+        else:
+            unit = 1
+            assigned_units = assigned_rows
+
+        rank_units = [
+            sum(
+                assigned_units[worker_id * world_size + rank]
+                for worker_id in range(num_workers)
+            )
+            for rank in range(world_size)
+        ]
+        rank_limit = min(rank_units)
+        if self.max_rows is not None:
+            rank_limit = min(rank_limit, self.max_rows // world_size // unit)
+
+        limits = [0] * num_shards
+        for rank in range(world_size):
+            remaining = rank_limit
+            for worker_id in range(num_workers):
+                shard_id = worker_id * world_size + rank
+                worker_units = min(assigned_units[shard_id], remaining)
+                limits[shard_id] = worker_units * unit
+                remaining -= worker_units
+            if remaining != 0:
+                raise RuntimeError(
+                    f"Could not allocate the common DDP epoch size for rank {rank}: "
+                    f"{remaining} rows remain"
+                )
+        return tuple(limits)
 
     def _shard(self) -> tuple[int, int]:
         worker = get_worker_info()
         worker_id = worker.id if worker is not None else 0
         num_workers = worker.num_workers if worker is not None else 1
-        if dist.is_available() and dist.is_initialized():
-            rank = dist.get_rank()
-            world_size = dist.get_world_size()
-        else:
-            rank = 0
-            world_size = 1
-        return rank * num_workers + worker_id, world_size * num_workers
+        rank, world_size = self._distributed_context()
+        # Interleave ranks before workers so a small number of row groups is
+        # distributed across ranks instead of all landing on rank zero.
+        return worker_id * world_size + rank, world_size * num_workers
 
-    def _worker_limit(self, shard_id: int, num_shards: int) -> int | None:
+    def _worker_limit(
+        self,
+        shard_id: int,
+        num_shards: int,
+        num_workers: int,
+    ) -> int | None:
+        world_size, remainder = divmod(num_shards, num_workers)
+        if remainder:
+            raise RuntimeError(
+                f"Cannot divide {num_shards} distributed workers into "
+                f"groups of {num_workers}"
+            )
+        if world_size > 1:
+            return self._distributed_worker_limits(
+                world_size,
+                num_workers,
+            )[shard_id]
         if self.max_rows is None:
             return None
         base, remainder = divmod(self.max_rows, num_shards)
@@ -257,31 +403,35 @@ class StreamingTokenParquetDataset(IterableDataset):
         import pyarrow.parquet as pq
 
         shard_id, num_shards = self._shard()
-        worker_limit = self._worker_limit(shard_id, num_shards)
+        worker = get_worker_info()
+        num_workers = worker.num_workers if worker is not None else 1
+        worker_limit = self._worker_limit(shard_id, num_shards, num_workers)
         if worker_limit == 0:
             return
 
-        work = [
-            (file_index, row_group_index)
-            for file_index, spec in enumerate(self.specs)
-            for row_group_index in range(len(spec.row_group_rows))
-        ]
-        worker = get_worker_info()
+        work = self._assignment_work()
         if not self.reshuffle_each_iteration:
             iteration_seed = 0
         elif worker is not None:
-            iteration_seed = torch.initial_seed()
+            # The DataLoader base seed changes when non-persistent workers are
+            # recreated; the local counter also advances persistent workers.
+            iteration_seed = torch.initial_seed() + self._iteration
+            self._iteration += 1
         else:
             iteration_seed = self._iteration
             self._iteration += 1
-        rng = np.random.default_rng(
-            (self.seed + shard_id + iteration_seed) % np.iinfo(np.uint64).max
-        )
-        if self.shuffle:
-            rng.shuffle(work)
+        # Give every rank/worker a disjoint row-group assignment before applying
+        # any worker-specific epoch shuffle.  Previously each worker shuffled the
+        # complete list with a different seed and only then took a strided slice;
+        # those different permutations could assign one row group to multiple
+        # workers while omitting another row group entirely.
         work = work[shard_id::num_shards]
+        if self.shuffle:
+            iteration_rng = np.random.default_rng(
+                (self.seed + shard_id + iteration_seed) % np.iinfo(np.uint64).max
+            )
+            iteration_rng.shuffle(work)
 
-        yielded = 0
         denominator = 2**64
         lower = (
             np.uint64(int(self.split_start * denominator))
@@ -294,67 +444,101 @@ class StreamingTokenParquetDataset(IterableDataset):
             else None
         )
 
-        for file_index, row_group_index in work:
-            spec = self.specs[file_index]
-            parquet = pq.ParquetFile(spec.path)
-            columns = [spec.token_column, spec.mask_column]
-            if spec.type_column is not None:
-                columns.append(spec.type_column)
+        use_shuffle_buffer = self.shuffle and self.shuffle_buffer_size > 1
 
-            batch_offset = 0
-            for batch in parquet.iter_batches(
-                batch_size=self.stream_batch_size,
-                row_groups=[row_group_index],
-                columns=columns,
-            ):
-                row_start = (
-                    spec.global_offset
-                    + spec.row_group_offsets[row_group_index]
-                    + batch_offset
-                )
-                global_indices = np.arange(
-                    row_start,
-                    row_start + batch.num_rows,
-                    dtype=np.uint64,
-                )
-                hashes = _split_hash(global_indices, self.seed)
-                in_split = np.ones(batch.num_rows, dtype=bool)
-                if lower is not None:
-                    in_split &= hashes >= lower
-                if upper is not None:
-                    in_split &= hashes < upper
-                selected = np.flatnonzero(in_split)
-                batch_offset += batch.num_rows
-                if len(selected) == 0:
-                    continue
-                if self.shuffle:
-                    rng.shuffle(selected)
-
-                token_index = batch.schema.get_field_index(spec.token_column)
-                mask_index = batch.schema.get_field_index(spec.mask_column)
-                tokens = _sequence_array_to_numpy(
-                    batch.column(token_index), np.dtype(np.int64)
-                )
-                masks = _sequence_array_to_numpy(
-                    batch.column(mask_index), np.dtype(bool)
-                )
+        def assigned_samples():
+            for file_index, row_group_index in work:
+                spec = self.specs[file_index]
+                parquet = pq.ParquetFile(spec.path)
+                columns = [spec.token_column, spec.mask_column]
                 if spec.type_column is not None:
-                    type_index = batch.schema.get_field_index(spec.type_column)
-                    type_ids = _sequence_array_to_numpy(
-                        batch.column(type_index), np.dtype(np.int64)
-                    )
-                else:
-                    type_ids = np.zeros_like(tokens, dtype=np.int64)
+                    columns.append(spec.type_column)
+                if spec.label_column is not None:
+                    columns.append(spec.label_column)
 
-                for index in selected:
-                    yield {
-                        TOKENS_KEY: torch.from_numpy(tokens[index]),
-                        MASK_KEY: torch.from_numpy(masks[index]),
-                        TYPE_IDS_KEY: torch.from_numpy(type_ids[index]),
-                    }
-                    yielded += 1
-                    if worker_limit is not None and yielded >= worker_limit:
-                        return
+                batch_offset = 0
+                for batch in parquet.iter_batches(
+                    batch_size=self.stream_batch_size,
+                    row_groups=[row_group_index],
+                    columns=columns,
+                ):
+                    row_start = (
+                        spec.global_offset
+                        + spec.row_group_offsets[row_group_index]
+                        + batch_offset
+                    )
+                    global_indices = np.arange(
+                        row_start,
+                        row_start + batch.num_rows,
+                        dtype=np.uint64,
+                    )
+                    hashes = _split_hash(global_indices, self.seed)
+                    in_split = np.ones(batch.num_rows, dtype=bool)
+                    if lower is not None:
+                        in_split &= hashes >= lower
+                    if upper is not None:
+                        in_split &= hashes < upper
+                    selected = np.flatnonzero(in_split)
+                    batch_offset += batch.num_rows
+                    if len(selected) == 0:
+                        continue
+                    if self.shuffle:
+                        iteration_rng.shuffle(selected)
+
+                    token_index = batch.schema.get_field_index(spec.token_column)
+                    mask_index = batch.schema.get_field_index(spec.mask_column)
+                    tokens = _sequence_array_to_numpy(
+                        batch.column(token_index), np.dtype(np.int64)
+                    )
+                    masks = _sequence_array_to_numpy(
+                        batch.column(mask_index), np.dtype(bool)
+                    )
+                    if spec.type_column is not None:
+                        type_index = batch.schema.get_field_index(spec.type_column)
+                        type_ids = _sequence_array_to_numpy(
+                            batch.column(type_index), np.dtype(np.int64)
+                        )
+                    else:
+                        type_ids = np.zeros_like(masks, dtype=np.int64)
+                    labels = None
+                    if spec.label_column is not None:
+                        label_index = batch.schema.get_field_index(spec.label_column)
+                        labels = np.asarray(
+                            batch.column(label_index).to_numpy(zero_copy_only=False),
+                            dtype=np.int64,
+                        )
+
+                    for index in selected:
+                        sample = {
+                            TOKENS_KEY: torch.from_numpy(tokens[index].copy()),
+                            MASK_KEY: torch.from_numpy(masks[index].copy()),
+                            TYPE_IDS_KEY: torch.from_numpy(type_ids[index].copy()),
+                        }
+                        if labels is not None:
+                            sample[LABELS_KEY] = torch.tensor(
+                                labels[index], dtype=torch.long
+                            )
+                        if use_shuffle_buffer:
+                            # A tensor view would keep its complete Arrow batch alive.
+                            # Clone buffered samples so memory is proportional to the
+                            # configured number of examples, not to old row groups.
+                            sample = {key: value.clone() for key, value in sample.items()}
+                        yield sample
+
+        samples = assigned_samples()
+        if use_shuffle_buffer:
+            samples = _bounded_shuffle(
+                samples,
+                buffer_size=self.shuffle_buffer_size,
+                rng=iteration_rng,
+            )
+
+        yielded = 0
+        for sample in samples:
+            yield sample
+            yielded += 1
+            if worker_limit is not None and yielded >= worker_limit:
+                return
 
 
 def make_classification_loaders(
@@ -500,6 +684,127 @@ class TokenParquetClassificationModule(BaseMapModule):
         pass
 
 
+class GroupedTokenParquetClassificationModule(BaseMapModule):
+    """Stream a prepared grouped-token classification dataset."""
+
+    def __init__(
+        self,
+        *,
+        prepared_dir: str,
+        seed: int = 42,
+        max_sequences: int | None = None,
+        token_column: str | None = None,
+        mask_column: str | None = None,
+        type_column: str | None = None,
+        label_column: str | None = None,
+        stream_batch_size: int = 4096,
+        shuffle_buffer_size: int = 8192,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        prepared_path = Path(prepared_dir)
+        manifest_path = prepared_path / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"Prepared classification manifest is missing: {manifest_path}"
+            )
+        manifest = json.loads(manifest_path.read_text())
+        if manifest.get("identity_overlap_detected") is not False:
+            raise ValueError("Prepared classification manifest does not verify disjoint splits")
+
+        total_limit = max_sequences if max_sequences and max_sequences > 0 else None
+        split_datasets = {}
+        for split_name in ("train", "val", "test"):
+            class_files = {
+                class_name: sorted(
+                    str(path)
+                    for path in (prepared_path / split_name / class_name).glob(
+                        "*.parquet"
+                    )
+                )
+                for class_name in ("signal", "background")
+            }
+            if not class_files["signal"] or not class_files["background"]:
+                raise FileNotFoundError(
+                    f"Prepared {split_name} split must contain signal and background shards"
+                )
+
+            expected = manifest.get("split_counts", {}).get(split_name, {})
+            if expected.get("signal") != expected.get("background"):
+                raise ValueError(f"Prepared {split_name} split is not class balanced")
+            split_total = expected.get("total")
+            split_limit = None
+            if total_limit is not None:
+                dataset_total = sum(
+                    counts.get("total", 0)
+                    for counts in manifest.get("split_counts", {}).values()
+                )
+                split_limit = int(total_limit * split_total / dataset_total)
+
+            split_datasets[split_name] = StreamingTokenParquetDataset(
+                parquet_files=class_files["signal"] + class_files["background"],
+                split_start=0.0,
+                split_end=1.0,
+                seed=seed,
+                max_rows=split_limit,
+                stream_batch_size=stream_batch_size,
+                shuffle_buffer_size=shuffle_buffer_size,
+                shuffle=True,
+                reshuffle_each_iteration=split_name == "train",
+                token_column=token_column,
+                mask_column=mask_column,
+                type_column=type_column,
+                label_column=label_column,
+                require_labels=True,
+                loader_num_workers=self.num_workers,
+                distributed_batch_size=self.batch_size,
+                distributed_drop_last=split_name == "train",
+            )
+            if split_total is not None and split_limit is None:
+                observed = split_datasets[split_name].total_rows
+                if observed != split_total:
+                    raise ValueError(
+                        f"Prepared {split_name} rows do not match manifest: "
+                        f"{observed} != {split_total}"
+                    )
+
+        self.train_set = split_datasets["train"]
+        self.valid_set = split_datasets["val"]
+        self.test_set = split_datasets["test"]
+        self.manifest = manifest
+        log.info(
+            "Prepared grouped classification dataset verified: train=%d val=%d test=%d",
+            self.train_set.total_rows,
+            self.valid_set.total_rows,
+            self.test_set.total_rows,
+        )
+
+    def setup(self, stage: str) -> None:
+        pass
+
+    def train_dataloader(self) -> DataLoader:
+        # IterableDataset performs row-group and bounded-buffer shuffling itself.
+        return self._get_dataloader(
+            self.train_set,
+            shuffle=False,
+            drop_last=True,
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        return self._get_dataloader(
+            self.valid_set,
+            shuffle=False,
+            drop_last=False,
+        )
+
+    def test_dataloader(self) -> DataLoader:
+        return self._get_dataloader(
+            self.test_set,
+            shuffle=False,
+            drop_last=False,
+        )
+
+
 class TokenParquetPretrainModule(BaseMapModule):
     """Stream prepared, pre-split Parquet shards for masked pretraining."""
 
@@ -518,6 +823,7 @@ class TokenParquetPretrainModule(BaseMapModule):
         mask_column: str | None = None,
         type_column: str | None = None,
         stream_batch_size: int = 4096,
+        shuffle_buffer_size: int = 8192,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -551,6 +857,13 @@ class TokenParquetPretrainModule(BaseMapModule):
                 "Provide prepared_dir or both train_parquet_files and val_parquet_files"
             )
 
+        self.token_vocabulary = _read_token_vocabulary(str(train_parquet_files[0]))
+        validation_vocabulary = _read_token_vocabulary(str(val_parquet_files[0]))
+        if self.token_vocabulary != validation_vocabulary:
+            raise ValueError(
+                "Prepared train and validation shards contain different token vocabularies"
+            )
+
         total_limit = max_sequences if max_sequences and max_sequences > 0 else None
         if manifest is not None and manifest.get("total_rows"):
             limit_train_frac = manifest["train_rows"] / manifest["total_rows"]
@@ -563,9 +876,12 @@ class TokenParquetPretrainModule(BaseMapModule):
         common_kwargs = dict(
             seed=seed,
             stream_batch_size=stream_batch_size,
+            shuffle_buffer_size=shuffle_buffer_size,
             token_column=token_column,
             mask_column=mask_column,
             type_column=type_column,
+            loader_num_workers=self.num_workers,
+            distributed_batch_size=self.batch_size,
         )
         self.train_set = StreamingTokenParquetDataset(
             parquet_files=[str(path) for path in train_parquet_files],
@@ -573,6 +889,7 @@ class TokenParquetPretrainModule(BaseMapModule):
             split_end=1.0,
             max_rows=train_limit,
             shuffle=True,
+            distributed_drop_last=True,
             **common_kwargs,
         )
         self.valid_set = StreamingTokenParquetDataset(
@@ -582,6 +899,7 @@ class TokenParquetPretrainModule(BaseMapModule):
             max_rows=val_limit,
             shuffle=True,
             reshuffle_each_iteration=False,
+            distributed_drop_last=True,
             **common_kwargs,
         )
         self.test_set = self.valid_set
@@ -642,3 +960,7 @@ class TokenParquetPretrainModule(BaseMapModule):
             except StopIteration:
                 continue
         raise RuntimeError("No token sequences available in the parquet files")
+
+    def get_token_vocabulary(self) -> dict | None:
+        """Return schema vocabulary metadata for model output-head construction."""
+        return self.token_vocabulary

@@ -70,6 +70,15 @@ def main(cfg: DictConfig) -> None:
         }
         if "feature_names" in inspect.signature(model_class.__init__).parameters:
             model_kwargs["feature_names"] = feature_names_from_datamodule(cfg)
+        if "token_vocabulary" in inspect.signature(model_class.__init__).parameters:
+            get_vocabulary = getattr(datamodule, "get_token_vocabulary", None)
+            if get_vocabulary is not None:
+                token_vocabulary = get_vocabulary()
+                model_kwargs["token_vocabulary"] = token_vocabulary
+                if token_vocabulary is not None and "vocab_size" in inspect.signature(
+                    model_class.__init__
+                ).parameters:
+                    model_kwargs["vocab_size"] = int(token_vocabulary["vocab_size"])
         model = hydra.utils.instantiate(cfg.model, **model_kwargs)
 
     if cfg.compile:
