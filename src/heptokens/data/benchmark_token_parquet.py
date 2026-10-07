@@ -137,7 +137,7 @@ class _ParquetFileSpec:
     num_rows: int
     row_group_rows: tuple[int, ...]
     row_group_offsets: tuple[int, ...]
-    token_column: str
+    token_column: str | None
     mask_column: str
     type_column: str | None
     label_column: str | None
@@ -159,16 +159,24 @@ def _split_hash(indices: np.ndarray, seed: int) -> np.ndarray:
 
 
 def _sequence_array_to_numpy(array, dtype: np.dtype) -> np.ndarray:
-    """Convert fixed-size Arrow sequence arrays without constructing Python lists."""
+    """Convert nested fixed-size Arrow arrays without constructing Python lists."""
     import pyarrow as pa
 
-    if pa.types.is_fixed_size_list(array.type):
-        if pa.types.is_list(array.type.value_type) or pa.types.is_fixed_size_list(
-            array.type.value_type
-        ):
+    values = array
+    shape = [len(array)]
+    while pa.types.is_fixed_size_list(values.type):
+        if values.null_count:
+            # Prepared production shards contain no null sequence values. Keep a
+            # correct fallback for external Parquet files that do.
             return np.asarray(array.to_pylist(), dtype=dtype)
-        values = np.asarray(array.values.to_numpy(zero_copy_only=False), dtype=dtype)
-        return values.reshape(len(array), array.type.list_size)
+        shape.append(values.type.list_size)
+        values = values.flatten()
+
+    if len(shape) > 1 and not (
+        pa.types.is_list(values.type) or pa.types.is_large_list(values.type)
+    ):
+        flat = np.asarray(values.to_numpy(zero_copy_only=False), dtype=dtype)
+        return flat.reshape(shape)
     return np.asarray(array.to_pylist(), dtype=dtype)
 
 
@@ -221,6 +229,7 @@ class StreamingTokenParquetDataset(IterableDataset):
         continuous_feature_mask_column: str | None = None,
         position_role_column: str | None = None,
         require_continuous: bool = False,
+        include_tokens: bool = True,
         loader_num_workers: int = 0,
         distributed_batch_size: int | None = None,
         distributed_drop_last: bool = False,
@@ -242,8 +251,11 @@ class StreamingTokenParquetDataset(IterableDataset):
         for path in parquet_files:
             parquet = pq.ParquetFile(path)
             names = parquet.schema_arrow.names
-            resolved_tokens = token_column or first_existing_column(
-                names, ["tokens", "input_ids"]
+            resolved_tokens = (
+                token_column
+                or first_existing_column(names, ["tokens", "input_ids"])
+                if include_tokens
+                else None
             )
             resolved_mask = mask_column or first_existing_column(
                 names, ["mask", "attention_mask"]
@@ -338,6 +350,7 @@ class StreamingTokenParquetDataset(IterableDataset):
         self.loader_num_workers = max(1, loader_num_workers)
         self.distributed_batch_size = distributed_batch_size
         self.distributed_drop_last = distributed_drop_last
+        self.include_tokens = include_tokens
         self._iteration = 0
         expected_rows = int(round(self.total_rows * (split_end - split_start)))
         self.max_rows = min(max_rows, expected_rows) if max_rows is not None else None
@@ -514,7 +527,13 @@ class StreamingTokenParquetDataset(IterableDataset):
             for file_index, row_group_index in work:
                 spec = self.specs[file_index]
                 parquet = pq.ParquetFile(spec.path)
-                columns = [spec.token_column, spec.mask_column]
+                columns = [spec.mask_column]
+                if self.include_tokens:
+                    if spec.token_column is None:
+                        raise RuntimeError(
+                            f"Token loading is enabled but {spec.path} has no token column"
+                        )
+                    columns.append(spec.token_column)
                 if spec.type_column is not None:
                     columns.append(spec.type_column)
                 if spec.label_column is not None:
@@ -555,11 +574,13 @@ class StreamingTokenParquetDataset(IterableDataset):
                     if self.shuffle:
                         iteration_rng.shuffle(selected)
 
-                    token_index = batch.schema.get_field_index(spec.token_column)
                     mask_index = batch.schema.get_field_index(spec.mask_column)
-                    tokens = _sequence_array_to_numpy(
-                        batch.column(token_index), np.dtype(np.int64)
-                    )
+                    tokens = None
+                    if self.include_tokens:
+                        token_index = batch.schema.get_field_index(spec.token_column)
+                        tokens = _sequence_array_to_numpy(
+                            batch.column(token_index), np.dtype(np.int64)
+                        )
                     masks = _sequence_array_to_numpy(
                         batch.column(mask_index), np.dtype(bool)
                     )
@@ -604,10 +625,11 @@ class StreamingTokenParquetDataset(IterableDataset):
 
                     for index in selected:
                         sample = {
-                            TOKENS_KEY: torch.from_numpy(tokens[index].copy()),
                             MASK_KEY: torch.from_numpy(masks[index].copy()),
                             TYPE_IDS_KEY: torch.from_numpy(type_ids[index].copy()),
                         }
+                        if tokens is not None:
+                            sample[TOKENS_KEY] = torch.from_numpy(tokens[index].copy())
                         if labels is not None:
                             sample[LABELS_KEY] = torch.tensor(
                                 labels[index], dtype=torch.long
@@ -954,6 +976,7 @@ class TokenParquetPretrainModule(BaseMapModule):
         shuffle_buffer_size: int = 8192,
         require_continuous: bool = False,
         continuous_feature_column: str | None = None,
+        include_tokens: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -1027,6 +1050,7 @@ class TokenParquetPretrainModule(BaseMapModule):
             distributed_batch_size=self.batch_size,
             require_continuous=require_continuous,
             continuous_feature_column=continuous_feature_column,
+            include_tokens=include_tokens,
         )
         self.train_set = StreamingTokenParquetDataset(
             parquet_files=[str(path) for path in train_parquet_files],

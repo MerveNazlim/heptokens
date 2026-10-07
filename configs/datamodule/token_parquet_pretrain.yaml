@@ -26,3 +26,4 @@ transforms:
 token_column:
 mask_column:
 type_column:
+include_tokens: true

@@ -1,0 +1,52 @@
+_target_: heptokens.data.data_grl_conversion.DataGrlConversionModule
+
+# One event membership and one grouped sequence layout are shared by Q1, Q8,
+# and continuous outputs.
+datamodule_config: configs/datamodule/atlas_event_object.yaml
+seed: 42
+train_frac: 0.9
+batch_size: 1024
+max_seq_length: 256
+shard_rows: 50000
+row_group_rows: 4096
+compression: snappy
+event_bins: 128
+require_real_data: true
+
+object_order:
+  - electrons
+  - muons
+  - taus
+  - photons
+  - jets
+  - tracks
+
+event_token_inputs:
+  - common/event/mu
+  - common/met/pt
+  - common/met/phi
+  - common/met/sumet
+
+event_token_ranges: []
+pad_token_id: 0
+cls_token_id: 1
+sep_token_id: 2
+mask_token_id: 3
+q1_vocab_size: 98820
+q8_vocab_size: 131588
+
+q1_tokenizer_spec:
+  electrons: [16384, 1]
+  muons: [16384, 1]
+  taus: [16384, 1]
+  photons: [16384, 1]
+  jets: [16384, 1]
+  tracks: [16384, 1]
+
+q8_tokenizer_spec:
+  electrons: [2048, 8]
+  muons: [2048, 8]
+  taus: [4096, 8]
+  photons: [2048, 8]
+  jets: [2048, 8]
+  tracks: [4096, 8]
