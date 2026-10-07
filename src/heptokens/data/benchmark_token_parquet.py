@@ -23,27 +23,16 @@ from torch.utils.data import (
     random_split,
 )
 
-from heptokens.data.sequence import (
+from heptokens.data.benchmark_sequence import (
+    CONTINUOUS_FEATURE_MASK_KEY,
+    CONTINUOUS_FEATURES_KEY,
     LABELS_KEY,
     MASK_KEY,
+    POSITION_ROLE_IDS_KEY,
     TOKENS_KEY,
     TYPE_IDS_KEY,
     first_existing_column,
 )
-
-try:
-    from heptokens.data.sequence import (
-        CONTINUOUS_FEATURE_MASK_KEY,
-        CONTINUOUS_FEATURES_KEY,
-        POSITION_ROLE_IDS_KEY,
-    )
-except ImportError:
-    # The production sequence helper predates the optional representation
-    # benchmark columns. Keep the grouped-token loader compatible with it.
-    CONTINUOUS_FEATURES_KEY = "continuous_features"
-    CONTINUOUS_FEATURE_MASK_KEY = "continuous_feature_mask"
-    POSITION_ROLE_IDS_KEY = "position_role_ids"
-
 from heptokens.data.atlas_mappable import BaseMapModule
 from heptokens.data.collation import collate_and_transform
 
@@ -148,7 +137,7 @@ class _ParquetFileSpec:
     num_rows: int
     row_group_rows: tuple[int, ...]
     row_group_offsets: tuple[int, ...]
-    token_column: str
+    token_column: str | None
     mask_column: str
     type_column: str | None
     label_column: str | None
@@ -262,8 +251,11 @@ class StreamingTokenParquetDataset(IterableDataset):
         for path in parquet_files:
             parquet = pq.ParquetFile(path)
             names = parquet.schema_arrow.names
-            resolved_tokens = token_column or first_existing_column(
-                names, ["tokens", "input_ids"]
+            resolved_tokens = (
+                token_column
+                or first_existing_column(names, ["tokens", "input_ids"])
+                if include_tokens
+                else None
             )
             resolved_mask = mask_column or first_existing_column(
                 names, ["mask", "attention_mask"]
@@ -537,6 +529,10 @@ class StreamingTokenParquetDataset(IterableDataset):
                 parquet = pq.ParquetFile(spec.path)
                 columns = [spec.mask_column]
                 if self.include_tokens:
+                    if spec.token_column is None:
+                        raise RuntimeError(
+                            f"Token loading is enabled but {spec.path} has no token column"
+                        )
                     columns.append(spec.token_column)
                 if spec.type_column is not None:
                     columns.append(spec.type_column)
@@ -817,7 +813,7 @@ class TokenParquetClassificationModule(BaseMapModule):
 
 
 class GroupedTokenParquetClassificationModule(BaseMapModule):
-    """Stream a prepared binary or multiclass grouped-token dataset."""
+    """Stream a prepared grouped-token classification dataset."""
 
     def __init__(
         self,
@@ -846,32 +842,9 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
         if manifest.get("identity_overlap_detected") is not False:
             raise ValueError("Prepared classification manifest does not verify disjoint splits")
 
-        manifest_classes = manifest.get("classes")
-        if manifest_classes:
-            ordered_classes = sorted(manifest_classes, key=lambda item: int(item["label"]))
-            labels = [int(item["label"]) for item in ordered_classes]
-            if labels != list(range(len(ordered_classes))):
-                raise ValueError(
-                    "Prepared classification labels must be contiguous integers from zero"
-                )
-            class_names = [str(item["name"]) for item in ordered_classes]
-        else:
-            class_names = ["signal", "background"]
-        manifest_n_classes = int(manifest.get("n_classes", len(class_names)))
-        if manifest_n_classes != len(class_names):
-            raise ValueError(
-                "Classification manifest n_classes does not match its class definitions"
-            )
-        if self.n_classes != manifest_n_classes:
-            raise ValueError(
-                f"Configured n_classes={self.n_classes}, but the prepared dataset has "
-                f"n_classes={manifest_n_classes}"
-            )
-
         total_limit = max_sequences if max_sequences and max_sequences > 0 else None
         split_datasets = {}
         continuous_schemas = []
-        token_vocabulary = None
         for split_name in ("train", "val", "test"):
             class_files = {
                 class_name: sorted(
@@ -880,24 +853,14 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
                         "*.parquet"
                     )
                 )
-                for class_name in class_names
+                for class_name in ("signal", "background")
             }
-            missing_classes = [name for name, files in class_files.items() if not files]
-            if missing_classes:
+            if not class_files["signal"] or not class_files["background"]:
                 raise FileNotFoundError(
-                    f"Prepared {split_name} split has no shards for classes: "
-                    f"{missing_classes}"
+                    f"Prepared {split_name} split must contain signal and background shards"
                 )
-            for class_name in class_names:
-                vocabulary = _read_token_vocabulary(class_files[class_name][0])
-                if token_vocabulary is None:
-                    token_vocabulary = vocabulary
-                elif vocabulary != token_vocabulary:
-                    raise ValueError(
-                        "Prepared classification shards contain different token vocabularies"
-                    )
             if require_continuous:
-                for class_name in class_names:
+                for class_name in ("signal", "background"):
                     schema = _read_continuous_schema(class_files[class_name][0])
                     if schema is None:
                         raise ValueError(
@@ -907,11 +870,8 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
                     continuous_schemas.append(schema)
 
             expected = manifest.get("split_counts", {}).get(split_name, {})
-            for class_name in class_names:
-                if expected.get(class_name) is None:
-                    raise ValueError(
-                        f"Manifest has no {split_name} count for class {class_name}"
-                    )
+            if expected.get("signal") != expected.get("background"):
+                raise ValueError(f"Prepared {split_name} split is not class balanced")
             split_total = expected.get("total")
             split_limit = None
             if total_limit is not None:
@@ -922,9 +882,7 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
                 split_limit = int(total_limit * split_total / dataset_total)
 
             split_datasets[split_name] = StreamingTokenParquetDataset(
-                parquet_files=[
-                    path for class_name in class_names for path in class_files[class_name]
-                ],
+                parquet_files=class_files["signal"] + class_files["background"],
                 split_start=0.0,
                 split_end=1.0,
                 seed=seed,
@@ -956,14 +914,6 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
         self.valid_set = split_datasets["val"]
         self.test_set = split_datasets["test"]
         self.manifest = manifest
-        self.class_names = class_names
-        self.token_vocabulary = token_vocabulary
-        weight_map = manifest.get("recommended_cross_entropy_weights")
-        self.class_weights = (
-            [float(weight_map[name]) for name in class_names]
-            if weight_map is not None
-            else None
-        )
         self.continuous_schema = (
             continuous_schemas[0] if continuous_schemas else None
         )
@@ -1003,12 +953,6 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
 
     def get_continuous_schema(self) -> dict | None:
         return self.continuous_schema
-
-    def get_token_vocabulary(self) -> dict | None:
-        return self.token_vocabulary
-
-    def get_class_weights(self) -> list[float] | None:
-        return self.class_weights
 
 
 class TokenParquetPretrainModule(BaseMapModule):
@@ -1058,7 +1002,7 @@ class TokenParquetPretrainModule(BaseMapModule):
             if parquet_files:
                 raise ValueError(
                     "Raw parquet_files are no longer accepted for production pretraining. "
-                    "Run scripts/prepare_token_parquet_pretrain_shards.py, then set "
+                    "Run scripts/benchmark_prepare_token_parquet_pretrain_shards.py, then set "
                     "datamodule.prepared_dir or explicit train_parquet_files and "
                     "val_parquet_files."
                 )
