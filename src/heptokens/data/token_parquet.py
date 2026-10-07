@@ -148,7 +148,7 @@ class _ParquetFileSpec:
     num_rows: int
     row_group_rows: tuple[int, ...]
     row_group_offsets: tuple[int, ...]
-    token_column: str
+    token_column: str | None
     mask_column: str
     type_column: str | None
     label_column: str | None
@@ -262,9 +262,11 @@ class StreamingTokenParquetDataset(IterableDataset):
         for path in parquet_files:
             parquet = pq.ParquetFile(path)
             names = parquet.schema_arrow.names
-            resolved_tokens = token_column or first_existing_column(
-                names, ["tokens", "input_ids"]
-            )
+            resolved_tokens = None
+            if include_tokens:
+                resolved_tokens = token_column or first_existing_column(
+                    names, ["tokens", "input_ids"]
+                )
             resolved_mask = mask_column or first_existing_column(
                 names, ["mask", "attention_mask"]
             )

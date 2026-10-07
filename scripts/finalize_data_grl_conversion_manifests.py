@@ -90,7 +90,11 @@ def finalize(args: argparse.Namespace) -> dict:
         expected_sources = [entry["source_uri"] for entry in group_manifest["files"]]
         status = statuses[group_id]
         observed_sources = list(status.get("source_counts", {}))
-        if observed_sources != expected_sources:
+        if len(expected_sources) != len(set(expected_sources)):
+            raise ValueError(f"Duplicate source in {group_id} campaign assignment")
+        # The converter sorts JSON dictionary keys, independently of the input
+        # file order. Validate membership without changing split fingerprints.
+        if set(observed_sources) != set(expected_sources):
             raise ValueError(
                 f"{group_id} source list differs from its campaign assignment"
             )

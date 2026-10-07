@@ -25,6 +25,7 @@ from heptokens.data.benchmark_token_parquet import (
     TokenParquetPretrainModule,
     _sequence_array_to_numpy,
 )
+from heptokens.data import token_parquet as main_parquet
 
 
 def _nested_array(values: np.ndarray, value_type: pa.DataType) -> pa.Array:
@@ -92,11 +93,15 @@ def _paired_table(
 
 
 class TestTokenParquetOptimizations(unittest.TestCase):
+    dataset_class = StreamingTokenParquetDataset
+    module_class = TokenParquetPretrainModule
+    arrow_converter = staticmethod(_sequence_array_to_numpy)
+
     def test_nested_fixed_size_arrow_conversion_preserves_sliced_values(self) -> None:
         values = np.arange(4 * 3 * 2, dtype=np.float32).reshape(4, 3, 2)
         array = _nested_array(values, pa.float32()).slice(1, 2)
 
-        converted = _sequence_array_to_numpy(array, np.dtype(np.float32))
+        converted = self.arrow_converter(array, np.dtype(np.float32))
 
         np.testing.assert_array_equal(converted, values[1:3])
         self.assertEqual(converted.shape, (2, 3, 2))
@@ -123,7 +128,7 @@ class TestTokenParquetOptimizations(unittest.TestCase):
                 path,
                 row_group_size=2,
             )
-            dataset = StreamingTokenParquetDataset(
+            dataset = self.dataset_class(
                 parquet_files=[str(path)],
                 split_start=0.0,
                 split_end=1.0,
@@ -178,7 +183,7 @@ class TestTokenParquetOptimizations(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "continuous-only.parquet"
             pq.write_table(table, path, row_group_size=2)
-            dataset = StreamingTokenParquetDataset(
+            dataset = self.dataset_class(
                 parquet_files=[str(path)],
                 split_start=0.0,
                 split_end=1.0,
@@ -189,6 +194,15 @@ class TestTokenParquetOptimizations(unittest.TestCase):
             )
 
             samples = list(dataset)
+
+            # Token-based training must still reject a missing token column.
+            with self.assertRaises(KeyError):
+                self.dataset_class(
+                    parquet_files=[str(path)],
+                    split_start=0.0,
+                    split_end=1.0,
+                    require_continuous=True,
+                )
 
         self.assertEqual(len(samples), rows)
         self.assertTrue(all(TOKENS_KEY not in sample for sample in samples))
@@ -210,7 +224,10 @@ class TestTokenParquetOptimizations(unittest.TestCase):
         role_ids = np.full((rows, sequence_length), 3, dtype=np.int64)
         table = _paired_table(
             tokens, features, feature_mask, mask, type_ids, role_ids
-        )
+        ).drop(["tokens"])
+        metadata = dict(table.schema.metadata)
+        metadata.pop(b"heptokens_token_vocabulary")
+        table = table.replace_schema_metadata(metadata)
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -228,7 +245,7 @@ class TestTokenParquetOptimizations(unittest.TestCase):
                     }
                 )
             )
-            module = TokenParquetPretrainModule(
+            module = self.module_class(
                 prepared_dir=str(root),
                 require_continuous=True,
                 continuous_feature_column="continuous_features",
@@ -243,6 +260,15 @@ class TestTokenParquetOptimizations(unittest.TestCase):
         self.assertFalse(module.train_set.include_tokens)
         self.assertNotIn(TOKENS_KEY, sample)
         self.assertIn(CONTINUOUS_FEATURES_KEY, sample)
+
+
+class TestMainTokenParquetOptimizations(TestTokenParquetOptimizations):
+    """Run the same regressions against the production loader, not just benchmarks."""
+
+    dataset_class = main_parquet.StreamingTokenParquetDataset
+    module_class = main_parquet.TokenParquetPretrainModule
+    arrow_converter = staticmethod(main_parquet._sequence_array_to_numpy)
+
 
 if __name__ == "__main__":
     unittest.main()
