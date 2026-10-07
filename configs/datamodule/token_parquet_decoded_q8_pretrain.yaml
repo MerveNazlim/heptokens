@@ -1,0 +1,5 @@
+defaults:
+  - token_parquet_continuous_pretrain
+  - _self_
+
+continuous_feature_column: decoded_continuous_features

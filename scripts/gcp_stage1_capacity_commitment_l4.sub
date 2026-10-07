@@ -1,0 +1,80 @@
+universe = vanilla
+
+executable = gcp_stage1_object_scan.sh
+arguments = $(NumQuantizers) $(CodebookSize) $(CodebookDim) $(ClusterId) $(ProcId)
+environment = "OBJECT=$(ObjectName) SEED=42 EPOCHS=20 BATCH_SIZE=1024 LEARNING_RATE=0.001 MAX_PREPROCESS_OBJECTS=1000000 NUM_WORKERS=3 CHUNK_SIZE=4096 HIDDEN_DIMS=$(HiddenDims) COMMITMENT_WEIGHT=$(CommitmentWeight) VARIANT_TAG=$(VariantTag) EXPECTED_SUBSET_SHA256=bf86e522d6c28b7284a3f5c18dcab9f6a78f47108712f8f03dcafa5c6fa2f9df EXPECTED_ARCHIVE_SHA256=fba1e899969831bfc48bb05e6362bcb92594515f62f680376f4f2664da20f900"
+
++gcp_job = true
++RequireId = "fcc-htcondor-pool-onel4gpu-ep"
+
+request_gpus = 1
+request_cpus = 4
+request_memory = 15000MB
+request_disk = 30GB
+
+output = logs/gcp_stage1_capacity_commitment_l4_$(ObjectName)_$(VariantTag).$(ClusterId).$(ProcId).out
+error  = logs/gcp_stage1_capacity_commitment_l4_$(ObjectName)_$(VariantTag).$(ClusterId).$(ProcId).err
+log    = logs/gcp_stage1_capacity_commitment_l4_$(ObjectName)_$(VariantTag).$(ClusterId).$(ProcId).log
+stream_output = True
+stream_error = True
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_input_files = heptokens-google-test.tar.gz
+transfer_output_files =
++WantIOProxy = True
+
+# One-factor-at-a-time study around the existing baseline:
+# q4, cb8192, dim8, hidden=[256,512,1024], commitment=1.0.
+# The baseline itself is not repeated.
+# The small/large capacity comparison is also repeated around the existing
+# q8, cb2048, dim8 baseline, again without repeating that baseline.
+queue ObjectName, NumQuantizers, CodebookSize, CodebookDim, HiddenDims, CommitmentWeight, VariantTag from (
+jets      4 8192 8 [128,256,512]   1.0  capacity_small
+jets      4 8192 8 [512,1024,2048] 1.0  capacity_large
+jets      4 8192 8 [256,512,1024]  0.25 commitment_0p25
+jets      4 8192 8 [256,512,1024]  0.5  commitment_0p5
+jets      4 8192 8 [256,512,1024]  2.0  commitment_2p0
+jets      8 2048 8 [128,256,512]   1.0  capacity_small
+jets      8 2048 8 [512,1024,2048] 1.0  capacity_large
+
+electrons 4 8192 8 [128,256,512]   1.0  capacity_small
+electrons 4 8192 8 [512,1024,2048] 1.0  capacity_large
+electrons 4 8192 8 [256,512,1024]  0.25 commitment_0p25
+electrons 4 8192 8 [256,512,1024]  0.5  commitment_0p5
+electrons 4 8192 8 [256,512,1024]  2.0  commitment_2p0
+electrons 8 2048 8 [128,256,512]   1.0  capacity_small
+electrons 8 2048 8 [512,1024,2048] 1.0  capacity_large
+
+muons     4 8192 8 [128,256,512]   1.0  capacity_small
+muons     4 8192 8 [512,1024,2048] 1.0  capacity_large
+muons     4 8192 8 [256,512,1024]  0.25 commitment_0p25
+muons     4 8192 8 [256,512,1024]  0.5  commitment_0p5
+muons     4 8192 8 [256,512,1024]  2.0  commitment_2p0
+muons     8 2048 8 [128,256,512]   1.0  capacity_small
+muons     8 2048 8 [512,1024,2048] 1.0  capacity_large
+
+photons   4 8192 8 [128,256,512]   1.0  capacity_small
+photons   4 8192 8 [512,1024,2048] 1.0  capacity_large
+photons   4 8192 8 [256,512,1024]  0.25 commitment_0p25
+photons   4 8192 8 [256,512,1024]  0.5  commitment_0p5
+photons   4 8192 8 [256,512,1024]  2.0  commitment_2p0
+photons   8 2048 8 [128,256,512]   1.0  capacity_small
+photons   8 2048 8 [512,1024,2048] 1.0  capacity_large
+
+taus      4 8192 8 [128,256,512]   1.0  capacity_small
+taus      4 8192 8 [512,1024,2048] 1.0  capacity_large
+taus      4 8192 8 [256,512,1024]  0.25 commitment_0p25
+taus      4 8192 8 [256,512,1024]  0.5  commitment_0p5
+taus      4 8192 8 [256,512,1024]  2.0  commitment_2p0
+taus      8 2048 8 [128,256,512]   1.0  capacity_small
+taus      8 2048 8 [512,1024,2048] 1.0  capacity_large
+
+tracks    4 8192 8 [128,256,512]   1.0  capacity_small
+tracks    4 8192 8 [512,1024,2048] 1.0  capacity_large
+tracks    4 8192 8 [256,512,1024]  0.25 commitment_0p25
+tracks    4 8192 8 [256,512,1024]  0.5  commitment_0p5
+tracks    4 8192 8 [256,512,1024]  2.0  commitment_2p0
+tracks    8 2048 8 [128,256,512]   1.0  capacity_small
+tracks    8 2048 8 [512,1024,2048] 1.0  capacity_large
+)

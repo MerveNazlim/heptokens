@@ -1,0 +1,7 @@
+defaults:
+  - token_parquet_grouped_classification
+  - _self_
+
+_target_: heptokens.data.benchmark_token_parquet.GroupedTokenParquetClassificationModule
+require_continuous: true
+continuous_feature_column: continuous_features

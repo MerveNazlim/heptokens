@@ -1,0 +1,6 @@
+defaults:
+  - foundation_grouped_cls_classifier
+  - _self_
+
+# Match the nonlinear downstream head in BNL-TREASURE foundation_model.py.
+classifier_hidden_dim: 256

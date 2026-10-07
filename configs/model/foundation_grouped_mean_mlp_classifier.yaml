@@ -1,0 +1,7 @@
+defaults:
+  - foundation_grouped_mean_classifier
+  - _self_
+
+# Use the same CLS-containing sequence but pool only the non-CLS positions.
+classifier_hidden_dim: 256
+exclude_first_position: true

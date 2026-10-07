@@ -1,0 +1,7 @@
+defaults:
+  - foundation_grouped_mean_classifier
+  - _self_
+
+# BNL-TREASURE-style nonlinear head on the original no-CLS event sequence.
+classifier_hidden_dim: 256
+exclude_first_position: false

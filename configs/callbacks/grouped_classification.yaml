@@ -1,0 +1,27 @@
+---
+model_summary:
+  _target_: lightning.pytorch.callbacks.RichModelSummary
+  max_depth: 2
+lr_monitor:
+  _target_: lightning.pytorch.callbacks.LearningRateMonitor
+  logging_interval: step
+best_checkpoint:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  dirpath: ${full_path}/checkpoints
+  filename: best
+  monitor: valid/auc
+  mode: max
+  save_on_train_epoch_end: false
+  save_weights_only: false
+  auto_insert_metric_name: false
+  enable_version_counter: false
+last_checkpoint:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  dirpath: ${full_path}/checkpoints
+  filename: last
+  save_on_train_epoch_end: true
+  save_weights_only: false
+  auto_insert_metric_name: false
+  enable_version_counter: false
+roc_callback:
+  _target_: heptokens.callbacks.roc_plots.ROCPlotCallback

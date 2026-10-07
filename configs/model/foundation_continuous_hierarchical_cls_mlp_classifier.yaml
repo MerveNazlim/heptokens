@@ -1,0 +1,5 @@
+defaults:
+  - foundation_continuous_flat_cls_mlp_classifier
+  - _self_
+
+architecture: hierarchical

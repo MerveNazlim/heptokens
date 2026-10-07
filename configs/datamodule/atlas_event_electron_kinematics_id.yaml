@@ -1,0 +1,49 @@
+_target_: heptokens.data.atlas_event_mappable.AtlasEventMapModule
+
+data_path: /path/to/event_data.h5
+data_paths:
+data_domains:
+
+sampling_domain_fractions:
+sampling_balance_by: valid_objects
+sampling_num_samples:
+
+train_frac: 0.7
+val_frac: 0.15
+test_frac: 0.15
+seed: 42
+n_classes: 1
+
+num_workers: 3
+batch_size: 1024
+pin_memory: false
+persistent_workers: false
+multiprocessing_context:
+
+transforms: {}
+
+object_type: electrons
+output_mode: object
+mask_input:
+
+event_inputs:
+  - common/event/pvx
+  - common/event/pvy
+  - common/event/pvz
+  - common/event/mu
+
+object_collections:
+  - object_name: electrons
+    mask_input: common/electrons/mask
+    inputs:
+      - common/electrons/pt
+      - common/electrons/eta
+      - common/electrons/phi
+      - common/electrons/charge
+      - atlas/electrons/LHMedium
+      - atlas/electrons/LHTight
+
+label_key:
+num_events:
+num_objects: 200
+max_objects:
