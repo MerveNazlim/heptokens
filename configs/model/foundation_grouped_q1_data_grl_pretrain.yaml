@@ -1,0 +1,9 @@
+defaults:
+  - foundation_grouped_pretrain
+  - _self_
+
+vocab_size: 98820
+max_quantizers: 1
+quantizer_embedding_dim: 32
+quantizer_decoder: parallel
+

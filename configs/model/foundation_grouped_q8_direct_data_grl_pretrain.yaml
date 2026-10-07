@@ -1,0 +1,7 @@
+defaults:
+  - foundation_grouped_q8_data_grl_pretrain
+  - _self_
+
+# Projection ablation: the concatenated 8 x 32D representation is already
+# 256D, so feed it directly to the transformer.
+object_projection_mode: identity

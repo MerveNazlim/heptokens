@@ -30,12 +30,27 @@ from heptokens.data.sequence import (
     TYPE_IDS_KEY,
     first_existing_column,
 )
+
+try:
+    from heptokens.data.sequence import (
+        CONTINUOUS_FEATURE_MASK_KEY,
+        CONTINUOUS_FEATURES_KEY,
+        POSITION_ROLE_IDS_KEY,
+    )
+except ImportError:
+    # The production sequence helper predates the optional representation
+    # benchmark columns. Keep the grouped-token loader compatible with it.
+    CONTINUOUS_FEATURES_KEY = "continuous_features"
+    CONTINUOUS_FEATURE_MASK_KEY = "continuous_feature_mask"
+    POSITION_ROLE_IDS_KEY = "position_role_ids"
+
 from heptokens.data.atlas_mappable import BaseMapModule
 from heptokens.data.collation import collate_and_transform
 
 log = logging.getLogger(__name__)
 NUM_WORKERS = 0 if platform.system() == "Darwin" else 2
 TOKEN_VOCABULARY_METADATA_KEY = b"heptokens_token_vocabulary"
+CONTINUOUS_SCHEMA_METADATA_KEY = b"heptokens_continuous_schema"
 
 
 def _read_token_vocabulary(parquet_path: str) -> dict | None:
@@ -44,6 +59,15 @@ def _read_token_vocabulary(parquet_path: str) -> dict | None:
 
     metadata = pq.ParquetFile(parquet_path).schema_arrow.metadata or {}
     encoded = metadata.get(TOKEN_VOCABULARY_METADATA_KEY)
+    return json.loads(encoded) if encoded is not None else None
+
+
+def _read_continuous_schema(parquet_path: str) -> dict | None:
+    """Read paired continuous-feature metadata from a Parquet shard."""
+    import pyarrow.parquet as pq
+
+    metadata = pq.ParquetFile(parquet_path).schema_arrow.metadata or {}
+    encoded = metadata.get(CONTINUOUS_SCHEMA_METADATA_KEY)
     return json.loads(encoded) if encoded is not None else None
 
 
@@ -128,6 +152,9 @@ class _ParquetFileSpec:
     mask_column: str
     type_column: str | None
     label_column: str | None
+    continuous_feature_column: str | None
+    continuous_feature_mask_column: str | None
+    position_role_column: str | None
     global_offset: int
 
 
@@ -143,16 +170,24 @@ def _split_hash(indices: np.ndarray, seed: int) -> np.ndarray:
 
 
 def _sequence_array_to_numpy(array, dtype: np.dtype) -> np.ndarray:
-    """Convert fixed-size Arrow sequence arrays without constructing Python lists."""
+    """Convert nested fixed-size Arrow arrays without constructing Python lists."""
     import pyarrow as pa
 
-    if pa.types.is_fixed_size_list(array.type):
-        if pa.types.is_list(array.type.value_type) or pa.types.is_fixed_size_list(
-            array.type.value_type
-        ):
+    values = array
+    shape = [len(array)]
+    while pa.types.is_fixed_size_list(values.type):
+        if values.null_count:
+            # Prepared production shards contain no null sequence values. Keep a
+            # correct fallback for external Parquet files that do.
             return np.asarray(array.to_pylist(), dtype=dtype)
-        values = np.asarray(array.values.to_numpy(zero_copy_only=False), dtype=dtype)
-        return values.reshape(len(array), array.type.list_size)
+        shape.append(values.type.list_size)
+        values = values.flatten()
+
+    if len(shape) > 1 and not (
+        pa.types.is_list(values.type) or pa.types.is_large_list(values.type)
+    ):
+        flat = np.asarray(values.to_numpy(zero_copy_only=False), dtype=dtype)
+        return flat.reshape(shape)
     return np.asarray(array.to_pylist(), dtype=dtype)
 
 
@@ -201,6 +236,11 @@ class StreamingTokenParquetDataset(IterableDataset):
         type_column: str | None = None,
         label_column: str | None = None,
         require_labels: bool = False,
+        continuous_feature_column: str | None = None,
+        continuous_feature_mask_column: str | None = None,
+        position_role_column: str | None = None,
+        require_continuous: bool = False,
+        include_tokens: bool = True,
         loader_num_workers: int = 0,
         distributed_batch_size: int | None = None,
         distributed_drop_last: bool = False,
@@ -234,10 +274,51 @@ class StreamingTokenParquetDataset(IterableDataset):
             resolved_labels = label_column or first_existing_column(
                 names, ["label", "labels"], required=False
             )
+            read_continuous = require_continuous or any(
+                value is not None
+                for value in (
+                    continuous_feature_column,
+                    continuous_feature_mask_column,
+                    position_role_column,
+                )
+            )
+            resolved_continuous = (
+                continuous_feature_column
+                or first_existing_column(names, ["continuous_features"], required=False)
+                if read_continuous
+                else None
+            )
+            resolved_continuous_mask = (
+                continuous_feature_mask_column
+                or first_existing_column(
+                    names, ["continuous_feature_mask"], required=False
+                )
+                if read_continuous
+                else None
+            )
+            resolved_roles = (
+                position_role_column
+                or first_existing_column(names, ["position_role_ids"], required=False)
+                if read_continuous
+                else None
+            )
             if require_labels and (
                 resolved_labels is None or resolved_labels not in names
             ):
                 raise KeyError(f"Expected a label column in {path}, found {names}")
+            if require_continuous and not all(
+                column is not None
+                for column in (
+                    resolved_continuous,
+                    resolved_continuous_mask,
+                    resolved_roles,
+                )
+                ):
+                raise KeyError(
+                    "Continuous baselines require the selected feature column, "
+                    f"continuous_feature_mask, and position_role_ids in {path}; "
+                    f"selected feature column={continuous_feature_column!r}"
+                )
             row_group_rows = tuple(
                 parquet.metadata.row_group(index).num_rows
                 for index in range(parquet.metadata.num_row_groups)
@@ -257,6 +338,9 @@ class StreamingTokenParquetDataset(IterableDataset):
                     mask_column=resolved_mask,
                     type_column=resolved_types,
                     label_column=resolved_labels,
+                    continuous_feature_column=resolved_continuous,
+                    continuous_feature_mask_column=resolved_continuous_mask,
+                    position_role_column=resolved_roles,
                     global_offset=global_offset,
                 )
             )
@@ -274,6 +358,7 @@ class StreamingTokenParquetDataset(IterableDataset):
         self.loader_num_workers = max(1, loader_num_workers)
         self.distributed_batch_size = distributed_batch_size
         self.distributed_drop_last = distributed_drop_last
+        self.include_tokens = include_tokens
         self._iteration = 0
         expected_rows = int(round(self.total_rows * (split_end - split_start)))
         self.max_rows = min(max_rows, expected_rows) if max_rows is not None else None
@@ -450,11 +535,19 @@ class StreamingTokenParquetDataset(IterableDataset):
             for file_index, row_group_index in work:
                 spec = self.specs[file_index]
                 parquet = pq.ParquetFile(spec.path)
-                columns = [spec.token_column, spec.mask_column]
+                columns = [spec.mask_column]
+                if self.include_tokens:
+                    columns.append(spec.token_column)
                 if spec.type_column is not None:
                     columns.append(spec.type_column)
                 if spec.label_column is not None:
                     columns.append(spec.label_column)
+                if spec.continuous_feature_column is not None:
+                    columns.append(spec.continuous_feature_column)
+                if spec.continuous_feature_mask_column is not None:
+                    columns.append(spec.continuous_feature_mask_column)
+                if spec.position_role_column is not None:
+                    columns.append(spec.position_role_column)
 
                 batch_offset = 0
                 for batch in parquet.iter_batches(
@@ -485,11 +578,13 @@ class StreamingTokenParquetDataset(IterableDataset):
                     if self.shuffle:
                         iteration_rng.shuffle(selected)
 
-                    token_index = batch.schema.get_field_index(spec.token_column)
                     mask_index = batch.schema.get_field_index(spec.mask_column)
-                    tokens = _sequence_array_to_numpy(
-                        batch.column(token_index), np.dtype(np.int64)
-                    )
+                    tokens = None
+                    if self.include_tokens:
+                        token_index = batch.schema.get_field_index(spec.token_column)
+                        tokens = _sequence_array_to_numpy(
+                            batch.column(token_index), np.dtype(np.int64)
+                        )
                     masks = _sequence_array_to_numpy(
                         batch.column(mask_index), np.dtype(bool)
                     )
@@ -507,16 +602,53 @@ class StreamingTokenParquetDataset(IterableDataset):
                             batch.column(label_index).to_numpy(zero_copy_only=False),
                             dtype=np.int64,
                         )
+                    continuous_features = None
+                    if spec.continuous_feature_column is not None:
+                        continuous_index = batch.schema.get_field_index(
+                            spec.continuous_feature_column
+                        )
+                        continuous_features = _sequence_array_to_numpy(
+                            batch.column(continuous_index), np.dtype(np.float32)
+                        )
+                    continuous_feature_mask = None
+                    if spec.continuous_feature_mask_column is not None:
+                        continuous_mask_index = batch.schema.get_field_index(
+                            spec.continuous_feature_mask_column
+                        )
+                        continuous_feature_mask = _sequence_array_to_numpy(
+                            batch.column(continuous_mask_index), np.dtype(bool)
+                        )
+                    position_role_ids = None
+                    if spec.position_role_column is not None:
+                        role_index = batch.schema.get_field_index(
+                            spec.position_role_column
+                        )
+                        position_role_ids = _sequence_array_to_numpy(
+                            batch.column(role_index), np.dtype(np.int64)
+                        )
 
                     for index in selected:
                         sample = {
-                            TOKENS_KEY: torch.from_numpy(tokens[index].copy()),
                             MASK_KEY: torch.from_numpy(masks[index].copy()),
                             TYPE_IDS_KEY: torch.from_numpy(type_ids[index].copy()),
                         }
+                        if tokens is not None:
+                            sample[TOKENS_KEY] = torch.from_numpy(tokens[index].copy())
                         if labels is not None:
                             sample[LABELS_KEY] = torch.tensor(
                                 labels[index], dtype=torch.long
+                            )
+                        if continuous_features is not None:
+                            sample[CONTINUOUS_FEATURES_KEY] = torch.from_numpy(
+                                continuous_features[index].copy()
+                            )
+                        if continuous_feature_mask is not None:
+                            sample[CONTINUOUS_FEATURE_MASK_KEY] = torch.from_numpy(
+                                continuous_feature_mask[index].copy()
+                            )
+                        if position_role_ids is not None:
+                            sample[POSITION_ROLE_IDS_KEY] = torch.from_numpy(
+                                position_role_ids[index].copy()
                             )
                         if use_shuffle_buffer:
                             # A tensor view would keep its complete Arrow batch alive.
@@ -685,7 +817,7 @@ class TokenParquetClassificationModule(BaseMapModule):
 
 
 class GroupedTokenParquetClassificationModule(BaseMapModule):
-    """Stream a prepared grouped-token classification dataset."""
+    """Stream a prepared binary or multiclass grouped-token dataset."""
 
     def __init__(
         self,
@@ -699,6 +831,8 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
         label_column: str | None = None,
         stream_batch_size: int = 4096,
         shuffle_buffer_size: int = 8192,
+        require_continuous: bool = False,
+        continuous_feature_column: str | None = None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -712,8 +846,32 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
         if manifest.get("identity_overlap_detected") is not False:
             raise ValueError("Prepared classification manifest does not verify disjoint splits")
 
+        manifest_classes = manifest.get("classes")
+        if manifest_classes:
+            ordered_classes = sorted(manifest_classes, key=lambda item: int(item["label"]))
+            labels = [int(item["label"]) for item in ordered_classes]
+            if labels != list(range(len(ordered_classes))):
+                raise ValueError(
+                    "Prepared classification labels must be contiguous integers from zero"
+                )
+            class_names = [str(item["name"]) for item in ordered_classes]
+        else:
+            class_names = ["signal", "background"]
+        manifest_n_classes = int(manifest.get("n_classes", len(class_names)))
+        if manifest_n_classes != len(class_names):
+            raise ValueError(
+                "Classification manifest n_classes does not match its class definitions"
+            )
+        if self.n_classes != manifest_n_classes:
+            raise ValueError(
+                f"Configured n_classes={self.n_classes}, but the prepared dataset has "
+                f"n_classes={manifest_n_classes}"
+            )
+
         total_limit = max_sequences if max_sequences and max_sequences > 0 else None
         split_datasets = {}
+        continuous_schemas = []
+        token_vocabulary = None
         for split_name in ("train", "val", "test"):
             class_files = {
                 class_name: sorted(
@@ -722,16 +880,38 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
                         "*.parquet"
                     )
                 )
-                for class_name in ("signal", "background")
+                for class_name in class_names
             }
-            if not class_files["signal"] or not class_files["background"]:
+            missing_classes = [name for name, files in class_files.items() if not files]
+            if missing_classes:
                 raise FileNotFoundError(
-                    f"Prepared {split_name} split must contain signal and background shards"
+                    f"Prepared {split_name} split has no shards for classes: "
+                    f"{missing_classes}"
                 )
+            for class_name in class_names:
+                vocabulary = _read_token_vocabulary(class_files[class_name][0])
+                if token_vocabulary is None:
+                    token_vocabulary = vocabulary
+                elif vocabulary != token_vocabulary:
+                    raise ValueError(
+                        "Prepared classification shards contain different token vocabularies"
+                    )
+            if require_continuous:
+                for class_name in class_names:
+                    schema = _read_continuous_schema(class_files[class_name][0])
+                    if schema is None:
+                        raise ValueError(
+                            f"Prepared {split_name}/{class_name} shards do not contain "
+                            "continuous schema metadata"
+                        )
+                    continuous_schemas.append(schema)
 
             expected = manifest.get("split_counts", {}).get(split_name, {})
-            if expected.get("signal") != expected.get("background"):
-                raise ValueError(f"Prepared {split_name} split is not class balanced")
+            for class_name in class_names:
+                if expected.get(class_name) is None:
+                    raise ValueError(
+                        f"Manifest has no {split_name} count for class {class_name}"
+                    )
             split_total = expected.get("total")
             split_limit = None
             if total_limit is not None:
@@ -742,7 +922,9 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
                 split_limit = int(total_limit * split_total / dataset_total)
 
             split_datasets[split_name] = StreamingTokenParquetDataset(
-                parquet_files=class_files["signal"] + class_files["background"],
+                parquet_files=[
+                    path for class_name in class_names for path in class_files[class_name]
+                ],
                 split_start=0.0,
                 split_end=1.0,
                 seed=seed,
@@ -756,6 +938,8 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
                 type_column=type_column,
                 label_column=label_column,
                 require_labels=True,
+                require_continuous=require_continuous,
+                continuous_feature_column=continuous_feature_column,
                 loader_num_workers=self.num_workers,
                 distributed_batch_size=self.batch_size,
                 distributed_drop_last=split_name == "train",
@@ -772,6 +956,19 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
         self.valid_set = split_datasets["val"]
         self.test_set = split_datasets["test"]
         self.manifest = manifest
+        self.class_names = class_names
+        self.token_vocabulary = token_vocabulary
+        weight_map = manifest.get("recommended_cross_entropy_weights")
+        self.class_weights = (
+            [float(weight_map[name]) for name in class_names]
+            if weight_map is not None
+            else None
+        )
+        self.continuous_schema = (
+            continuous_schemas[0] if continuous_schemas else None
+        )
+        if any(schema != self.continuous_schema for schema in continuous_schemas):
+            raise ValueError("Prepared classification shards have inconsistent continuous schemas")
         log.info(
             "Prepared grouped classification dataset verified: train=%d val=%d test=%d",
             self.train_set.total_rows,
@@ -804,6 +1001,15 @@ class GroupedTokenParquetClassificationModule(BaseMapModule):
             drop_last=False,
         )
 
+    def get_continuous_schema(self) -> dict | None:
+        return self.continuous_schema
+
+    def get_token_vocabulary(self) -> dict | None:
+        return self.token_vocabulary
+
+    def get_class_weights(self) -> list[float] | None:
+        return self.class_weights
+
 
 class TokenParquetPretrainModule(BaseMapModule):
     """Stream prepared, pre-split Parquet shards for masked pretraining."""
@@ -824,6 +1030,9 @@ class TokenParquetPretrainModule(BaseMapModule):
         type_column: str | None = None,
         stream_batch_size: int = 4096,
         shuffle_buffer_size: int = 8192,
+        require_continuous: bool = False,
+        continuous_feature_column: str | None = None,
+        include_tokens: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -863,6 +1072,19 @@ class TokenParquetPretrainModule(BaseMapModule):
             raise ValueError(
                 "Prepared train and validation shards contain different token vocabularies"
             )
+        self.continuous_schema = _read_continuous_schema(str(train_parquet_files[0]))
+        validation_continuous_schema = _read_continuous_schema(
+            str(val_parquet_files[0])
+        )
+        if self.continuous_schema != validation_continuous_schema:
+            raise ValueError(
+                "Prepared train and validation shards contain different continuous schemas"
+            )
+        if require_continuous and self.continuous_schema is None:
+            raise ValueError(
+                "Continuous baseline requested, but prepared shards do not contain paired "
+                "continuous features. Re-export with --write-continuous-features."
+            )
 
         total_limit = max_sequences if max_sequences and max_sequences > 0 else None
         if manifest is not None and manifest.get("total_rows"):
@@ -882,6 +1104,9 @@ class TokenParquetPretrainModule(BaseMapModule):
             type_column=type_column,
             loader_num_workers=self.num_workers,
             distributed_batch_size=self.batch_size,
+            require_continuous=require_continuous,
+            continuous_feature_column=continuous_feature_column,
+            include_tokens=include_tokens,
         )
         self.train_set = StreamingTokenParquetDataset(
             parquet_files=[str(path) for path in train_parquet_files],
@@ -964,3 +1189,7 @@ class TokenParquetPretrainModule(BaseMapModule):
     def get_token_vocabulary(self) -> dict | None:
         """Return schema vocabulary metadata for model output-head construction."""
         return self.token_vocabulary
+
+    def get_continuous_schema(self) -> dict | None:
+        """Return paired continuous-feature metadata for model construction."""
+        return self.continuous_schema

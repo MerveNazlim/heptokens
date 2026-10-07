@@ -1,0 +1,7 @@
+defaults:
+  - foundation_grouped_pretrain
+  - _self_
+
+# Whole object positions are masked together. RVQ codes are then predicted
+# q0 -> q7 with teacher forcing and object/stage-specific legal output ranges.
+quantizer_decoder: autoregressive

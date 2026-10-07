@@ -9,6 +9,7 @@ max_seq_length: 256
 vocab_size: 20000
 max_quantizers: 8
 quantizer_embedding_dim: 32
+object_projection_mode: linear
 num_type_ids: 12
 mask_token_id: 3
 pad_token_id: 0

@@ -22,3 +22,7 @@ checkpoint_per_epoch:
   filename: last
   enable_version_counter: false
   auto_insert_metric_name: false
+live_metrics:
+  _target_: heptokens.callbacks.monitor.LiveMetricsCSV
+  path: ${full_path}/live_metrics.csv
+  logging_interval: 100

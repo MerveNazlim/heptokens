@@ -1,0 +1,7 @@
+defaults:
+  - foundation_grouped_q1_data_grl_pretrain
+  - _self_
+
+# Width-matched Q1 control retaining the production 256 -> 256 projection.
+quantizer_embedding_dim: 256
+object_projection_mode: linear

@@ -1,0 +1,16 @@
+defaults:
+  - token_parquet_pretrain
+  - _self_
+
+# Uses the exact same precomputed event membership as Q1 and continuous.
+prepared_dir:
+train_frac: 0.9
+val_frac: 0.1
+seed: 42
+stream_batch_size: 4096
+shuffle_buffer_size: 8192
+num_workers: 3
+batch_size: 448
+include_tokens: true
+token_column: tokens
+

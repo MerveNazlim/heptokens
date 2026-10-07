@@ -3,6 +3,7 @@ _target_: heptokens.models.foundation_grouped_cls_classifier.LitGroupedCLSClassi
 
 backbone_ckpt_path:
 freeze_backbone: true
+class_weights:
 hidden_dim: 256
 num_heads: 8
 num_layers: 4
@@ -11,6 +12,7 @@ max_seq_length: 256
 vocab_size: 131588
 max_quantizers: 8
 quantizer_embedding_dim: 32
+object_projection_mode: linear
 num_type_ids: 12
 pad_token_id: 0
 cls_token_id: 1

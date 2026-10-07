@@ -1,0 +1,8 @@
+defaults:
+  - foundation_grouped_q1_data_grl_pretrain
+  - _self_
+
+# Width-matched Q1 control: one 256D token embedding enters the transformer
+# directly, without the learned object projection used by the production model.
+quantizer_embedding_dim: 256
+object_projection_mode: identity

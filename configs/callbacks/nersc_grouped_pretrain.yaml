@@ -1,0 +1,19 @@
+defaults:
+  - pretrain
+  - _self_
+
+# Preserve the epoch checkpoint used by the original run and add one rolling
+# intra-epoch checkpoint for recovery from Perlmutter's wall-time limit.
+periodic_checkpoint:
+  _target_: lightning.pytorch.callbacks.ModelCheckpoint
+  dirpath: ${full_path}/checkpoints
+  filename: step-{step}
+  every_n_train_steps: 5000
+  save_top_k: 1
+  save_on_exception: true
+  save_weights_only: false
+  auto_insert_metric_name: false
+  enable_version_counter: false
+
+checkpoint_per_epoch:
+  save_on_exception: true
