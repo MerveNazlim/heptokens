@@ -261,6 +261,17 @@ def prepare(args: argparse.Namespace) -> None:
                 reference_schema = schema
             elif not schema.equals(reference_schema, check_metadata=False):
                 raise ValueError(f"Parquet schema does not match previous inputs: {input_path}")
+            if reference_schema is not None:
+                reference_continuous = (reference_schema.metadata or {}).get(
+                    b"heptokens_continuous_schema"
+                )
+                input_continuous = (schema.metadata or {}).get(
+                    b"heptokens_continuous_schema"
+                )
+                if input_continuous != reference_continuous:
+                    raise ValueError(
+                        f"Continuous feature schema does not match previous inputs: {input_path}"
+                    )
 
             domain = input_domain(input_path)
             input_available_rows[input_path] = parquet.metadata.num_rows

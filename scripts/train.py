@@ -79,6 +79,16 @@ def main(cfg: DictConfig) -> None:
                     model_class.__init__
                 ).parameters:
                     model_kwargs["vocab_size"] = int(token_vocabulary["vocab_size"])
+        if "continuous_schema" in inspect.signature(model_class.__init__).parameters:
+            get_continuous_schema = getattr(
+                datamodule, "get_continuous_schema", None
+            )
+            if get_continuous_schema is not None:
+                model_kwargs["continuous_schema"] = get_continuous_schema()
+        if "class_weights" in inspect.signature(model_class.__init__).parameters:
+            get_class_weights = getattr(datamodule, "get_class_weights", None)
+            if get_class_weights is not None:
+                model_kwargs["class_weights"] = get_class_weights()
         model = hydra.utils.instantiate(cfg.model, **model_kwargs)
 
     if cfg.compile:

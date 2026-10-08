@@ -5,10 +5,9 @@ data_path: /path/to/event_data.h5
 data_paths:
 data_domains:
 
-# This iterable loader uses random file-level splits instead of loading all
-# events and doing a global random event split. If data_domains is unset, files
-# under a realdata directory are treated as data and the rest as MC.
-split_by_domain: true
+# The iterable loader reproduces the eager loader's seeded global event-level
+# split while retaining chunked HDF5 reads. This legacy option is ignored.
+split_by_domain: false
 sampling_domain_fractions:
 sampling_balance_by: valid_objects
 sampling_num_samples:
@@ -25,6 +24,12 @@ pin_memory: false
 persistent_workers: false
 multiprocessing_context:
 chunk_size: 4096
+# Both modes use the same seeded global event-level split. Mix training events
+# across files by default; use legacy only to reproduce original Google ordering.
+shuffle_mode: buffered
+# Only used by buffered mode, per DataLoader worker.
+shuffle_buffer_size: 16384
+shuffle_file_window_size: 16
 transforms: {}
 
 output_mode: object
@@ -75,7 +80,6 @@ object_collections:
       - common/muons/eta
       - common/muons/phi
       - common/muons/charge
-      # - common/muons/trk_iso03
       - atlas/muons/ptvarcone30
       - atlas/muons/topoetcone20
 
@@ -96,7 +100,6 @@ object_collections:
       - common/photons/pt
       - common/photons/eta
       - common/photons/phi
-      # - common/photons/trk_iso03
       - atlas/photons/isTight
       - atlas/photons/ptcone20
       - atlas/photons/topoetcone20

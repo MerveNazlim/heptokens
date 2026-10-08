@@ -11,7 +11,7 @@ Follow the stages in this order:
 
 1. Prepare HDF5 inputs and a datamodule configuration.
 2. Fit one preprocessing transform per object type.
-3. Train one tokenizer per object type.
+3. Train and evaluate one tokenizer per object type.
 4. Export grouped event Parquet files.
 5. Build train/validation Parquet shards.
 6. Pretrain the masked event model.
@@ -165,6 +165,46 @@ Expected training output:
         checkpoints/last.ckpt
 
 Use best.ckpt for evaluation and Parquet export. Use last.ckpt only to resume an interrupted run.
+
+### Evaluate a trained tokenizer
+
+Before production Parquet export, inspect the selected checkpoint:
+
+    pixi run python scripts/analyze_vqvae_tokenizer.py \
+      --run-dir /work/heptokens/results/my_tokenizers/jets_full_dim8_cb16384_q1_e20 \
+      --split val \
+      --device auto
+
+The root `analyze_vqvae_tokenizer.py` is a compatibility entrypoint that
+delegates to this same implementation; both commands share the CLI and
+evaluation behavior.
+
+The evaluator reads `full_config.yaml`, selects `best.ckpt` (falling back to
+`last.ckpt`), and reuses the saved datamodule and preprocessing transform.
+The H5 files and preprocessing `.joblib` paths in that configuration must
+be accessible; evaluation does not refit preprocessing or train the model.
+
+Outputs default to `<run-dir>/figures/tokenizer_analysis/`: feature plots,
+`reconstruction_metrics.json`, `codebook_counts.npy`,
+`codebook_usage_summary.json` (usage, entropy, and perplexity per quantizer),
+and `summary.txt`. Unused-code counts refer to the evaluated sample, not
+proof that those codes were never used during training.
+
+Use `--split test` for final held-out results. Keep the saved ordered input
+list, event counts, split fractions, and seed to preserve split membership.
+`--h5-files` and `--num-events-per-file` can change that membership.
+`--max-valid-objects` caps collected objects without redefining the split,
+but a capped sample is not guaranteed to be globally representative.
+The main evaluation path honors the saved loader; an older eager loader
+can still load complete H5 inputs.
+
+Optional `--derived-electron-run-dir` and `--derived-muon-run-dir` diagnostics
+also use each run's saved preprocessing and inverse-transform valid objects
+before computing leading-lepton mass and angular separation. They require
+`--split val` or `--split test`, the same ordered H5 files, matching loader
+types, and identical event selections. Mismatches raise an error instead of
+pairing unrelated events. This paired path uses zero loader workers to keep
+event order deterministic; ordinary diagnostics still honor `--num-workers`.
 
 ### Train one shared tokenizer across object types
 
@@ -480,9 +520,9 @@ For every final comparison, record:
 | configs/datamodule/atlas_event_object.yaml | Default object features, masks, and HDF5 paths |
 | scripts/get_atlas_object_preprocessing.py | Fit object preprocessing transforms |
 | scripts/train.py | Hydra training entry point |
+| scripts/analyze_vqvae_tokenizer.py | Evaluate saved tokenizer reconstruction and codebook usage |
 | scripts/tokenize_objects_to_grouped_parquet.py | Encode object checkpoints into grouped event Parquet |
 | scripts/prepare_token_parquet_pretrain_shards.py | Build pretraining shards |
 | scripts/prepare_grouped_hzz_classification_shards.py | Build balanced HZZ classification shards |
 | configs/model/foundation_grouped_pretrain.yaml | Masked grouped-token pretraining model |
 | configs/model/foundation_grouped_cls_classifier.yaml | Grouped [CLS] classification model |
-

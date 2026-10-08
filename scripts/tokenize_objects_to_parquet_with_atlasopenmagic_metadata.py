@@ -145,6 +145,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-event-token", action="store_true")
     parser.add_argument("--write-legacy-columns", action="store_true")
     parser.add_argument(
+        "--write-continuous-features",
+        action="store_true",
+        help=(
+            "Grouped exporter only: write preprocessed continuous features aligned with sequence "
+            "positions for flat and hierarchical continuous baselines."
+        ),
+    )
+    parser.add_argument(
+        "--write-decoded-q8-features",
+        action="store_true",
+        help=(
+            "Grouped exporter only: also decode each complete residual-code tuple with its VQ-VAE "
+            "and write decoded_continuous_features. Requires "
+            "--write-continuous-features."
+        ),
+    )
+    parser.add_argument(
         "--atlasopenmagic-release",
         default="2024r-pp",
         help=(
@@ -312,6 +329,26 @@ def read_event_token_values(
         bins = np.clip(scaled, 0, spec["size"] - 1).astype(np.int64)
         tokens.append(spec["base"] + bins)
     return np.stack(tokens, axis=1)
+
+
+def read_normalized_event_values(
+    handle: h5py.File,
+    event_token_specs: list[dict],
+    event_slice: slice,
+) -> np.ndarray | None:
+    """Read event scalars and scale them with the token vocabulary ranges."""
+    if not event_token_specs:
+        return None
+
+    normalized = []
+    for spec in event_token_specs:
+        low, high = (float(value) for value in spec["range"])
+        if high <= low:
+            raise ValueError(f"Invalid event range for {spec['input']}: {[low, high]}")
+        values = read_h5_path(handle, spec["input"], event_slice).astype(np.float32)
+        values = np.nan_to_num(values, nan=low, posinf=high, neginf=low)
+        normalized.append(np.clip((values - low) / (high - low), 0.0, 1.0))
+    return np.stack(normalized, axis=1).astype(np.float32)
 
 
 def python_scalar(value):
@@ -485,15 +522,31 @@ def encode_object_batch(
     csts: torch.Tensor,
     mask: torch.Tensor,
     device: torch.device,
-) -> torch.Tensor:
+    *,
+    return_decoded: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     batch = {
         "csts": csts.to(device),
         "mask": mask.to(device),
         "jets": mask.sum(dim=1, keepdim=True).float().to(device),
     }
-    indices = model(batch).detach().cpu().long()
+    if return_decoded:
+        z_q, indices, _ = model.encode(batch)
+        decoded = model.decode(z_q, batch).detach().cpu().float()
+        if decoded.shape != csts.shape:
+            raise ValueError(
+                "Decoded VQ-VAE features do not match the input feature shape: "
+                f"{tuple(decoded.shape)} != {tuple(csts.shape)}"
+            )
+        if not torch.isfinite(decoded[mask]).all():
+            raise ValueError("VQ-VAE decoder produced non-finite object features")
+    else:
+        indices = model(batch)
+    indices = indices.detach().cpu().long()
     if indices.dim() == 2:
         indices = indices.unsqueeze(-1)
+    if return_decoded:
+        return indices, decoded
     return indices
 
 
@@ -619,12 +672,18 @@ def add_token(
 
 
 def assemble_rows(
-    encoded_objects: dict[str, tuple[torch.Tensor, torch.Tensor]],
+    encoded_objects: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
     event_tokens: np.ndarray | None,
     batch_size: int,
     vocabulary: dict,
     args: argparse.Namespace,
+    event_values: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if vocabulary.get("continuous_schema") is not None:
+        raise ValueError(
+            "Continuous feature columns require the grouped exporter; use "
+            "scripts/tokenize_objects_to_grouped_parquet.py"
+        )
     all_tokens = np.full((batch_size, args.max_seq_length), args.pad_token_id, dtype=np.int64)
     all_types = np.zeros((batch_size, args.max_seq_length), dtype=np.int64)
     all_mask = np.zeros((batch_size, args.max_seq_length), dtype=bool)
@@ -650,7 +709,7 @@ def assemble_rows(
         for object_name in args.object_order:
             if object_name not in encoded_objects:
                 continue
-            indices, object_mask = encoded_objects[object_name]
+            indices, object_mask = encoded_objects[object_name][:2]
             type_id = TYPE_IDS[object_name]
             object_vocab = vocabulary["objects"][object_name]
 
@@ -702,6 +761,7 @@ def make_table(
     sample_metadata: dict,
     write_legacy_columns: bool,
     vocabulary: dict,
+    extra_columns: dict[str, np.ndarray] | None = None,
 ) -> pa.Table:
     seq_len = tokens.shape[1]
     n_rows = len(tokens)
@@ -760,9 +820,48 @@ def make_table(
         fields["input_ids"] = fields["tokens"]
         fields["attention_mask"] = fields["mask"]
         fields["token_type_ids"] = fields["type_ids"]
+    if extra_columns:
+        continuous = extra_columns.get("continuous_features")
+        decoded_continuous = extra_columns.get("decoded_continuous_features")
+        feature_mask = extra_columns.get("continuous_feature_mask")
+        role_ids = extra_columns.get("position_role_ids")
+        if continuous is not None:
+            fields["continuous_features"] = pa.array(
+                continuous.tolist(),
+                type=pa.list_(
+                    pa.list_(pa.float32(), continuous.shape[2]),
+                    continuous.shape[1],
+                ),
+            )
+        if decoded_continuous is not None:
+            fields["decoded_continuous_features"] = pa.array(
+                decoded_continuous.tolist(),
+                type=pa.list_(
+                    pa.list_(pa.float32(), decoded_continuous.shape[2]),
+                    decoded_continuous.shape[1],
+                ),
+            )
+        if feature_mask is not None:
+            fields["continuous_feature_mask"] = pa.array(
+                feature_mask.tolist(),
+                type=pa.list_(
+                    pa.list_(pa.bool_(), feature_mask.shape[2]),
+                    feature_mask.shape[1],
+                ),
+            )
+        if role_ids is not None:
+            fields["position_role_ids"] = pa.array(
+                role_ids.tolist(),
+                type=pa.list_(pa.int64(), role_ids.shape[1]),
+            )
     table = pa.table(fields)
     metadata = dict(table.schema.metadata or {})
     metadata[b"heptokens_token_vocabulary"] = json.dumps(vocabulary, sort_keys=True).encode()
+    continuous_schema = vocabulary.get("continuous_schema")
+    if continuous_schema is not None:
+        metadata[b"heptokens_continuous_schema"] = json.dumps(
+            continuous_schema, sort_keys=True
+        ).encode()
     metadata[b"heptokens_sample_metadata_columns"] = json.dumps(
         [
             "dsid",
@@ -865,9 +964,21 @@ def choose_event_token_inputs(config: dict, args: argparse.Namespace) -> list[st
     return default_inputs
 
 
-def main() -> None:
+def main(*, supports_continuous_features: bool = False) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     args = parse_args()
+
+    # Fail before loading H5 files/checkpoints or creating output files.
+    if args.write_decoded_q8_features and not args.write_continuous_features:
+        raise ValueError(
+            "--write-decoded-q8-features requires --write-continuous-features"
+        )
+    if args.write_continuous_features and not supports_continuous_features:
+        raise ValueError(
+            "--write-continuous-features and --write-decoded-q8-features "
+            "are only supported by scripts/tokenize_objects_to_grouped_parquet.py; "
+            "the flat exporter cannot align them to individual code positions"
+        )
 
     config = load_data_config(args.datamodule_config)
     collections = collection_map(config.get("object_collections") or [])
@@ -880,7 +991,16 @@ def main() -> None:
     event_token_inputs = choose_event_token_inputs(config, args)
     event_range_map = parse_event_range_map(args.event_token_ranges)
     vocabulary = build_vocabulary(models, event_token_inputs, event_range_map, args)
+    if args.write_continuous_features:
+        from heptokens.data.continuous_schema import build_continuous_schema
 
+        vocabulary["continuous_schema"] = build_continuous_schema(
+            collections=collections,
+            object_order=list(vocabulary["objects"]),
+            event_token_specs=vocabulary["event_tokens"],
+            type_ids=TYPE_IDS,
+            include_decoded_q8=args.write_decoded_q8_features,
+        )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     vocabulary_path = output_path.with_suffix(".vocab.json")
@@ -937,11 +1057,12 @@ def main() -> None:
                             object_name,
                         )
                         try:
-                            indices = encode_object_batch(
+                            encoded = encode_object_batch(
                                 models[object_name],
                                 csts,
                                 object_mask,
                                 device,
+                                return_decoded=args.write_decoded_q8_features,
                             )
                         except Exception as exc:
                             valid_objects = int(object_mask.sum().item())
@@ -951,20 +1072,48 @@ def main() -> None:
                                 f"csts_shape={tuple(csts.shape)} "
                                 f"valid_objects={valid_objects}"
                             ) from exc
-                        encoded_objects[object_name] = (indices, object_mask)
+                        if args.write_decoded_q8_features:
+                            indices, decoded = encoded
+                            encoded_objects[object_name] = (
+                                indices,
+                                object_mask,
+                                csts,
+                                decoded,
+                            )
+                        else:
+                            encoded_objects[object_name] = (
+                                encoded,
+                                object_mask,
+                                csts,
+                            )
 
                     event_tokens = read_event_token_values(
                         handle,
                         vocabulary["event_tokens"],
                         event_slice,
                     )
-                    tokens, mask, type_ids = assemble_rows(
+                    event_values = (
+                        read_normalized_event_values(
+                            handle,
+                            vocabulary["event_tokens"],
+                            event_slice,
+                        )
+                        if args.write_continuous_features
+                        else None
+                    )
+                    assembled = assemble_rows(
                         encoded_objects,
                         event_tokens,
                         batch_events,
                         vocabulary,
                         args,
+                        event_values=event_values,
                     )
+                    if len(assembled) == 3:
+                        tokens, mask, type_ids = assembled
+                        extra_columns = None
+                    else:
+                        tokens, mask, type_ids, extra_columns = assembled
                     table = make_table(
                         tokens,
                         mask,
@@ -974,6 +1123,7 @@ def main() -> None:
                         sample_metadata=sample_metadata,
                         write_legacy_columns=args.write_legacy_columns,
                         vocabulary=vocabulary,
+                        extra_columns=extra_columns,
                     )
                     if writer is None:
                         writer = pq.ParquetWriter(output_path, table.schema, compression="snappy")
