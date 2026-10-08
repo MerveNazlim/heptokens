@@ -1,110 +1,82 @@
-# heptokens (event-level implementation)
+# heptokens: object tokenizers and event Parquet
 
-> [!CAUTION]
-> This implementation is done with the first version of heptokens, this will be moved to https://github.com/Treasure-AmSC/heptokens-atlas later in the project.
+Train one VQ-VAE/RVQ tokenizer per object type, evaluate its reconstruction, and
+convert H5 events into grouped Q1, Q8 and continuous Parquet datasets.
 
+This guide covers the tokenizer and Parquet code in the event_level branch.
+Grouped foundation-model implementations are not included here yet; pretraining
+and fine-tuning will be documented when those models are integrated.
 
+## Setup
 
-Train object-level VQ-VAE/RVQ tokenizers, convert collider events to grouped token sequences, pretrain a masked event transformer, and fine-tune it for event-level classification.
+Run commands from the repository root. For a fresh Pixi environment:
 
-Follow the stages in this order:
+    pixi install --locked
+    pixi run python -c "import torch, pyarrow; print(torch.__version__, pyarrow.__version__)"
 
-1. Prepare HDF5 inputs and a datamodule configuration.
-2. Fit one preprocessing transform per object type.
-3. Train and evaluate one tokenizer per object type.
-4. Export grouped event Parquet files.
-5. Build train/validation Parquet shards.
-6. Pretrain the masked event model.
-7. Build labeled shards and fine-tune a classifier.
+PyArrow 24.0.0 and vector-quantize-pytorch 0.2.2 are pinned. Saved preprocessing
+joblibs need the scikit-learn version used to fit them. Use the separate cloud
+runtime/lock for B300 jobs; the repository's Linux lock uses CUDA 12.1.
 
-The project assumes a fixed object order and one tokenizer configuration across every export, pretraining, and downstream run.
+The current H5 inputs are produced by the
+[BNL conversion code](https://gitlab.cern.ch/vcavalie/bnl-treasure/-/blob/master/download_and_convert.py?ref_type=heads).
 
-## 1. Install
+## 1. Configure the H5 inputs
 
-Create the project environment with Pixi:
+Use configs/datamodule/atlas_event_object_iterable.yaml for chunked tokenizer
+training. Its default shuffle mode is buffered: batches mix events across files.
+Set datamodule.shuffle_mode=legacy to reproduce the original Google ordering.
+Both modes use the same seeded global 70/15/15 event-level split.
 
-    pixi install
+The eager loader is still available as atlas_event_object. MC, data and mixed
+input lists remain supported. The iterable loader does not implement weighted
+domain sampling.
 
-Run all commands from the repository root:
+Object features and masks have shape [events, objects]; event scalars have shape
+[events]. Paths and feature order must match the chosen YAML:
 
-    cd /path/to/heptokens
+    common/event/...                 event scalars
+    common/met/...                   MET scalars
+    common/<object>/...              shared object features and mask
+    atlas/<object>/...               ATLAS-specific object features
 
-Use the same environment for every stage:
+The six collections are electrons, muons, taus, photons, jets and tracks.
+To use different paths or features, copy the datamodule YAML and edit its
+object_collections. Select the same configuration for fitting, training and
+conversion. Do not reorder features after training.
 
-    pixi run python --version
+The iterable defaults are 4,096-event chunks, a 16,384-event shuffle buffer per
+worker and a 16-file mixing window. Features stay on disk; split assignment
+still uses memory proportional to the event count.
 
-## 2. Prepare HDF5 data
-Current HDF5 files are produced using the following code: https://gitlab.cern.ch/vcavalie/bnl-treasure/-/blob/master/download_and_convert.py?ref_type=heads
+## 2. Fit preprocessing
 
-The default configuration is:
-
-    configs/datamodule/atlas_event_object.yaml
-
-Your HDF5 files must use the same collection and feature paths declared in the selected datamodule YAML. Arrays must be event-major:
-
-| Content | Required shape |
-| --- | --- |
-| Object feature | [n_events, max_objects] |
-| Object mask | [n_events, max_objects] |
-| Event feature | [n_events] |
-
-The default ATLAS layout is:
-
-    file.h5
-    ├── common/
-    │   ├── event/         # pvx, pvy, pvz, mu
-    │   └── met/           # pt, phi, sumet
-    ├── jets/              # object features and mask
-    ├── electrons/
-    ├── muons/
-    ├── photons/
-    ├── taus/
-    └── tracks/
-
-For each object collection, define:
-
-- a mask with the same first two dimensions as its features;
-- pT, eta, and phi for objects where they exist;
-- every feature used by the tokenizer;
-- the same paths for tokenizer training and Parquet export.
-
-### Use data stored elsewhere
-
-Copy the default datamodule config and edit paths, object names, masks, feature names, and feature order for your files:
-
-    cp configs/datamodule/atlas_event_object.yaml \
-      configs/datamodule/my_event_data.yaml
-
-Select this config in training with:
-
-    datamodule=my_event_data
-
-Pass the full YAML path to standalone scripts:
-
-    --datamodule-config configs/datamodule/my_event_data.yaml
-
-Do not change feature order after training a tokenizer. The export config must match the config used for that tokenizer.
-
-If your HDF5 inputs already contain sample metadata, disable Atlas Open Magic metadata lookup during export:
-
-    --metadata-source h5 --atlasopenmagic-release ""
-
-## 3. Fit preprocessing transforms
-
-Fit one transform per object type before tokenizer training. Save the transform and reuse the identical file when training and exporting that object.
+Fit once per object on training events, then reuse that exact joblib for training,
+evaluation and conversion. Do not fit on validation or test objects.
 
 Example for jets:
 
-    pixi run python scripts/get_atlas_object_preprocessing.py \
-      --h5-files /data/events/train_001.h5 /data/events/train_002.h5 \
-      --datamodule-config configs/datamodule/my_event_data.yaml \
-      --object-type jets \
-      --mode log_standard \
-      --log-features pt,mass,n_trk,QG_nTracks \
-      --output-dir /work/heptokens/preprocessing \
-      --output-name jets_log_standard
+    H5=(/data/mc_001.h5 /data/data_001.h5)
+    WORK=/work/heptokens
 
-Typical log features used by the ATLAS configuration are:
+    pixi run python scripts/get_atlas_object_preprocessing.py \
+      --h5-files "${H5[@]}" \
+      --datamodule-config configs/datamodule/atlas_event_object_iterable.yaml \
+      --object-type jets --fit-split train \
+      --mode log_standard --log-features pt,mass,n_trk,QG_nTracks \
+      --max-objects 1000000 --seed 42 \
+      --output-dir "$WORK/preprocessing" --output-name jets_log_standard
+
+--fit-split train matches the tokenizer loader's training membership. Use the
+same ordered H5 list, event caps, split fractions and seed during training.
+The old default, --fit-split all, is retained for training-only H5 copies and
+existing callers; it does not exclude held-out events from mixed input files.
+
+The fitter reads feature arrays per file and stops at --max-objects in input
+order. This cap is not a representative sample across all files: choose the
+input list accordingly. It writes a .joblib and a .json describing the fit.
+
+Repeat for the other objects with their configured feature lists:
 
 | Object | Log features |
 | --- | --- |
@@ -115,414 +87,204 @@ Typical log features used by the ATLAS configuration are:
 | taus | pt |
 | tracks | pt,chiSquared |
 
-Check that every expected transform exists before training:
+## 3. Train and evaluate tokenizers
 
-    ls /work/heptokens/preprocessing/*.joblib
+One tokenizer uses one GPU. num_quantizers is residual-code depth, not GPU count.
+For the default direct-conversion campaign, use latent dimension 8 and:
 
-## 4. Train object tokenizers
+| Objects | Q1 codebook | Q8 codebook |
+| --- | ---: | ---: |
+| electrons, muons, photons, jets | 16384 × 1 | 2048 × 8 |
+| taus, tracks | 16384 × 1 | 4096 × 8 |
 
-Train one independent VQ-VAE/RVQ tokenizer per object type. Each tokenizer has its own codebook and preprocessing transform.
+Other Q/codebook settings are supported by the tokenizer and standalone exporter,
+but must not be substituted into a campaign with a different conversion policy.
 
-The main residual-quantization settings are:
-
-| Setup | num_quantizers | codebook_size | codebook_dim |
-| --- | ---: | ---: | ---: |
-| q1 control | 1 | 16384 | 8 |
-| q4 full | 4 | chosen per object | 16 |
-| q8 scan/full | 8 | chosen per object | 8 |
-
-The q1 cb16384 dim8 control has the same total codebook-vector capacity as q8 cb2048 dim8:
-
-    1 × 16384 × 8 = 8 × 2048 × 8
-
-Example: train a q1 jet tokenizer on a GPU:
+Example Q1 jet training, using the same input list as preprocessing:
 
     pixi run python scripts/train.py \
-      datamodule=my_event_data model=vqvae callbacks=event_tokenizer \
-      output_dir=/work/heptokens/results \
-      project_name=my_tokenizers \
-      network_name=jets_full_dim8_cb16384_q1_e20 \
-      "datamodule.data_paths=[/data/events/train_001.h5,/data/events/train_002.h5]" \
-      datamodule.object_type=jets \
-      datamodule.batch_size=1024 \
-      model.codebook_dim=8 \
-      model.codebook_size=16384 \
-      model.num_quantizers=1 \
+      datamodule=atlas_event_object_iterable model=vqvae callbacks=event_tokenizer \
+      seed=42 output_dir="$WORK/results" project_name=object_tokenizers \
+      network_name=jets_q1 \
+      "datamodule.data_paths=[/data/mc_001.h5,/data/data_001.h5]" \
+      "datamodule.data_domains=[mc,data]" \
+      datamodule.seed=42 datamodule.object_type=jets \
+      datamodule.batch_size=1024 datamodule.num_workers=3 \
+      datamodule.multiprocessing_context=spawn datamodule.shuffle_mode=buffered \
+      model.codebook_dim=8 model.codebook_size=16384 model.num_quantizers=1 \
       +datamodule.transforms.preprocess._target_=heptokens.data.collation.preprocess_objects_batch \
       +datamodule.transforms.preprocess._partial_=true \
       +datamodule.transforms.preprocess.cst_fn._target_=joblib.load \
-      +datamodule.transforms.preprocess.cst_fn.filename=/work/heptokens/preprocessing/jets_log_standard.joblib \
-      trainer.max_epochs=20 \
-      trainer.accelerator=gpu \
-      trainer.devices=1
+      +datamodule.transforms.preprocess.cst_fn.filename="$WORK/preprocessing/jets_log_standard.joblib" \
+      trainer.max_epochs=20 trainer.accelerator=gpu trainer.devices=1 \
+      trainer.val_check_interval=1.0 trainer.check_val_every_n_epoch=1 \
+      logger.offline=true
 
-Expected training output:
+The epoch validation overrides are needed for small runs; the base training
+config otherwise validates every 5,000 batches. Checkpoints and full_config.yaml
+are saved under $WORK/results/object_tokenizers/jets_q1/.
 
-    /work/heptokens/results/my_tokenizers/
-      jets_full_dim8_cb16384_q1_e20/
-        full_config.yaml
-        checkpoints/best.ckpt
-        checkpoints/last.ckpt
+For a short smoke test, use trainer.max_epochs=1, +trainer.limit_train_batches=20,
+trainer.limit_val_batches=2 and +trainer.num_sanity_val_steps=0. A CPU test can
+use trainer.accelerator=cpu and datamodule.num_workers=0. Keep the same event cap
+when fitting and training.
 
-Use best.ckpt for evaluation and Parquet export. Use last.ckpt only to resume an interrupted run.
+For sparse objects, check that training/validation batches contain valid objects.
+All-empty object batches are not supported by the tokenizer loss yet.
+Codebook initialization and reset are optional and off by default; their settings
+are in configs/model/vqvae.yaml. This pipeline does not change loss or optimizer
+settings.
 
-### Evaluate a trained tokenizer
-
-Before production Parquet export, inspect the selected checkpoint:
+Evaluate a trained tokenizer:
 
     pixi run python scripts/analyze_vqvae_tokenizer.py \
-      --run-dir /work/heptokens/results/my_tokenizers/jets_full_dim8_cb16384_q1_e20 \
-      --split val \
-      --device auto
+      --run-dir "$WORK/results/object_tokenizers/jets_q1" \
+      --split val --device auto
 
-The root `analyze_vqvae_tokenizer.py` is a compatibility entrypoint that
-delegates to this same implementation; both commands share the CLI and
-evaluation behavior.
+The evaluator uses the saved configuration, preprocessing and best.ckpt (falling
+back to last.ckpt). It writes reconstruction plots/metrics and per-quantizer
+codebook usage under figures/tokenizer_analysis/. Use --split test for final
+held-out results. Changing the H5 list or event cap changes split membership.
 
-The evaluator reads `full_config.yaml`, selects `best.ckpt` (falling back to
-`last.ckpt`), and reuses the saved datamodule and preprocessing transform.
-The H5 files and preprocessing `.joblib` paths in that configuration must
-be accessible; evaluation does not refit preprocessing or train the model.
+The root analyze_vqvae_tokenizer.py delegates to the same evaluator. Evaluation
+does not train a model or create Parquets.
 
-Outputs default to `<run-dir>/figures/tokenizer_analysis/`: feature plots,
-`reconstruction_metrics.json`, `codebook_counts.npy`,
-`codebook_usage_summary.json` (usage, entropy, and perplexity per quantizer),
-and `summary.txt`. Unused-code counts refer to the evaluated sample, not
-proof that those codes were never used during training.
+## 4. Convert H5 directly to Parquet
 
-Use `--split test` for final held-out results. Keep the saved ordered input
-list, event counts, split fractions, and seed to preserve split membership.
-`--h5-files` and `--num-events-per-file` can change that membership.
-`--max-valid-objects` caps collected objects without redefining the split,
-but a capped sample is not guaranteed to be globally representative.
-The main evaluation path honors the saved loader; an older eager loader
-can still load complete H5 inputs.
+Use scripts/tokenize_data_grl_multi_representation.py for the Google/data-GRL
+pipeline. Settings are in configs/datamodule/data_grl_q1_q8_continuous_conversion.yaml;
+the conversion policy is in src/heptokens/data/data_grl_conversion.py.
 
-Optional `--derived-electron-run-dir` and `--derived-muon-run-dir` diagnostics
-also use each run's saved preprocessing and inverse-transform valid objects
-before computing leading-lepton mass and angular separation. They require
-`--split val` or `--split test`, the same ordered H5 files, matching loader
-types, and identical event selections. Mismatches raise an error instead of
-pairing unrelated events. This paired path uses zero loader workers to keep
-event order deterministic; ordinary diagnostics still honor `--num-workers`.
+It reads each H5 in bounded batches, applies saved joblibs without refitting,
+and runs frozen Q1/Q8 tokenizers. All three outputs share deterministic
+approximately 90/10 train/validation membership based on source identity,
+local event index and seed 42.
 
-### Train one shared tokenizer across object types
+Defaults: batch size 1,024; at most 50,000 events per shard; 4,096 rows per Parquet
+row group; sequence length 256. Each event contains CLS, four context positions,
+one position per physical object, six separators and padding. Q1 tokens are
+[256,1], Q8 tokens [256,8]. Continuous output stores the preprocessed features,
+feature masks and position roles, without unused token columns.
 
-Use a shared tokenizer only for collections configured with exactly the same feature names and feature order. For example, all object types can share a kinematics-only tokenizer with:
+There is no intermediate giant signal.parquet/background.parquet and no separate
+resharing step. A shard can contain events from several H5 inputs; this is not
+strictly one H5 to one Parquet. Long sequences are truncated in object order.
 
-    pt, eta, phi
+Stage the input H5s locally. Example group manifest at $WORK/group-00000.json:
 
-The repository already provides this shared-tokenizer implementation in configs/datamodule/atlas_event_mappable.yaml. It uses output_mode: combined and defines the common kinematics inputs for its selected collections. Add tracks to that config with pt, eta, phi when you want it in the shared tokenizer. Keep the separate full-feature configuration for object-specific tokenizers; its feature lists are intentionally heterogeneous.
+    {
+      "group_id": "group-00000",
+      "files": [
+        {
+          "local_path": "/work/heptokens/inputs/data_001.h5",
+          "source_uri": "gs://my-bucket/inputs/data_001.h5"
+        }
+      ]
+    }
 
+source_uri must identify the original file and remain unchanged across staging
+locations and retries. Assign each source to exactly one group. The converter
+does local file I/O; the cloud launcher handles GCS downloads/uploads.
 
-Use or copy the combined datamodule configuration:
+Supply matching Q1/Q8 checkpoints and the six joblibs. Q1 and Q8 must use the same
+saved preprocessing in this paired converter. For a bundle arranged as
+artifacts/q1/<object>.ckpt, artifacts/q8/<object>.ckpt and
+artifacts/preprocessing/<object>.joblib:
 
-    cp configs/datamodule/atlas_event_mappable.yaml \
-      configs/datamodule/my_shared_kinematics.yaml
+    A="$WORK/artifacts"
+    Q1=()
+    Q8=()
+    PREPROCESSORS=()
+    for object in electrons muons taus photons jets tracks; do
+      Q1+=("$object=$A/q1/$object.ckpt")
+      Q8+=("$object=$A/q8/$object.ckpt")
+      PREPROCESSORS+=("$object=$A/preprocessing/$object.joblib")
+    done
 
-Set output_mode to combined. Give every selected collection the same inputs, in the same order. Combined mode concatenates valid objects from those collections into one object axis and trains one tokenizer on that pooled object sample.
-
-Fit one preprocessing transform across all selected object collections:
-
-    pixi run python scripts/get_atlas_combined_object_preprocessing.py \
-      --h5-files /data/events/train_001.h5 /data/events/train_002.h5 \
-      --datamodule-config configs/datamodule/my_shared_kinematics.yaml \
-      --object-types jets electrons muons taus photons \
-      --mode log_standard \
-      --log-features pt \
-      --output-dir /work/heptokens/preprocessing \
-      --output-name combined_kinematics_log_standard
-
-Train the shared tokenizer:
-
-    pixi run python scripts/train.py \
-      datamodule=my_shared_kinematics \
-      model=transformer_vqvae \
-      callbacks=event_tokenizer \
-      output_dir=/work/heptokens/results \
-      project_name=my_tokenizers \
-      network_name=combined_kinematics_q1 \
-      "datamodule.data_paths=[/data/events/train_001.h5,/data/events/train_002.h5]" \
-      datamodule.batch_size=1024 \
-      model.codebook_dim=8 \
-      model.codebook_size=16384 \
-      model.num_quantizers=1 \
-      +datamodule.transforms.preprocess._target_=heptokens.data.collation.preprocess_objects_batch \
-      +datamodule.transforms.preprocess._partial_=true \
-      +datamodule.transforms.preprocess.cst_fn._target_=joblib.load \
-      +datamodule.transforms.preprocess.cst_fn.filename=/work/heptokens/preprocessing/combined_kinematics_log_standard.joblib \
-      trainer.max_epochs=20 \
-      trainer.accelerator=gpu \
-      trainer.devices=1
-
-When exporting a shared tokenizer, use the same checkpoint and the same combined preprocessing transform for every object collection included in that shared setup.
-
-Expected training output:
-
-    /work/heptokens/results/my_tokenizers/
-      jets_full_dim8_cb16384_q1_e20/
-        full_config.yaml
-        checkpoints/best.ckpt
-        checkpoints/last.ckpt
-
-Use best.ckpt for evaluation and Parquet export. Use last.ckpt only to resume an interrupted run.
-
-## 5. Export grouped token Parquet
-
-The grouped format keeps each physical object at one sequence position. The token vector at that position contains Q residual code IDs:
-
-    tokens:   [n_events, sequence_length, Q]
-    mask:     [n_events, sequence_length]
-    type_ids: [n_events, sequence_length]
-
-For a q8 object, the eight residual code IDs q0 through q7 remain together at that one position:
-
-    [q0, q1, q2, q3, q4, q5, q6, q7]
-      → 8 code embeddings of dimension 32
-      → concatenate: 8 × 32 = 256
-      → linear object projection: 256 → d_model = 256
-      → add object-type embedding and position embedding
-      → one vector passed to the event transformer
-
-      
-This is a concatenate-and-project operation, not mean pooling. q1 and q4 follow the same procedure with one or four code embeddings. In a mixed-Q export, its common tensor uses the largest Q and pads unused code slots. Therefore one physical object always contributes one event-sequence position, independent of Q.
-
-
-### Set and check sequence length
-
-The exported Parquet arrays are padded to --max-seq-length. The current pretraining and classification models use:
-
-    max_seq_length = 256
-
-With the default export options and six object collections, the number of valid positions in an event is:
-
-    1 [CLS] + 4 event-context tokens + number of valid objects + 6 [SEP] tokens
-
-Thus an event with no valid physics objects has 11 valid positions, while the maximum is 256. The stored arrays always have length 256; sum(mask) gives the actual valid length of each event.
-
-The exporter appends positions in the supplied --object-order. When an event exceeds 256 positions, later positions are dropped. Put the most important collections first, keep the same order in every export, and measure truncation before the production export:
-
-    pixi run python scripts/analyze_event_sequence_lengths.py \
-      --h5-files /data/events/sample_001.h5 \
-      --datamodule-config configs/datamodule/my_event_data.yaml \
-      --object-quantizers jets=8 electrons=8 muons=8 photons=8 taus=8 tracks=8 \
-      --object-order jets electrons muons photons taus tracks \
-      --max-seq-length 256 \
-      --output-json /work/heptokens/sequence_length_report.json
-
-Use the quantizer count from the selected tokenizer for each object. For example, replace every 8 above with 1 for a q1 export, or use the actual mixed q settings when applicable.
-
-The sequence includes [CLS], event-context tokens, object positions grouped by type and separated by [SEP], and padding. Object order must be fixed across signal, background, data, pretraining, and fine-tuning exports.
-
-
-Run a small two-object export first:
-
-    TOKENIZERS=( \
-      jets=/work/heptokens/results/my_tokenizers/jets_full_dim8_cb16384_q1_e20/checkpoints/best.ckpt \
-      electrons=/work/heptokens/results/my_tokenizers/electrons_full_dim8_cb16384_q1_e20/checkpoints/best.ckpt \
-    )
-
-    PREPROCESSORS=( \
-      jets=/work/heptokens/preprocessing/jets_log_standard.joblib \
-      electrons=/work/heptokens/preprocessing/electrons_log_standard.joblib \
-    )
-
-    pixi run python scripts/tokenize_objects_to_grouped_parquet.py \
-      --h5-files /data/events/sample_001.h5 \
-      --output /work/heptokens/parquet/events_q1.parquet \
-      --datamodule-config configs/datamodule/my_event_data.yaml \
-      --tokenizer-checkpoints "${TOKENIZERS[@]}" \
+    pixi run python scripts/tokenize_data_grl_multi_representation.py \
+      --conversion-config configs/datamodule/data_grl_q1_q8_continuous_conversion.yaml \
+      --input-manifest "$WORK/group-00000.json" \
+      --datamodule-config configs/datamodule/atlas_event_object_iterable.yaml \
+      --q1-tokenizer-checkpoints "${Q1[@]}" \
+      --q8-tokenizer-checkpoints "${Q8[@]}" \
       --preprocess-transformers "${PREPROCESSORS[@]}" \
-      --object-order jets electrons \
-      --max-seq-length 256 \
-      --device cuda \
-      --metadata-source h5 \
-      --atlasopenmagic-release ""
+      --output-dir "$WORK/prepared" --device cuda
 
-For a production export:
+Use a fresh output directory for a smoke test, with --num-events-per-file 128.
+The default campaign is collision data only; --allow-mc explicitly permits MC.
+Zero-byte/unreadable H5s are recorded and skipped. Review invalid-input counts.
+Zero-event conversion fails rather than writing a success marker.
 
-1. Supply all selected object checkpoints.
-2. Supply all matching preprocessing transforms.
-3. Use one fixed object order.
-4. Export signal, background, and data separately.
-5. Inspect the Parquet schema and metadata before preparing shards.
+Output layout:
 
-> [!CAUTION]
-> The current code merges many HDF5 inputs into one Parquet file per sample category: signal, background, and data. This is good for the existing runs, but it is not the intended scalable layout. Future production processing should convert each HDF5 file independently to a corresponding Parquet file, then build pretraining or classification shards from the complete set of per-file Parquets. Preserve source_file and event_index so splits remain deterministic and no source event is duplicated across splits.
+    prepared/
+      q1/{train,val}/part-group-00000-*.parquet
+      q8/{train,val}/part-group-00000-*.parquet
+      continuous/{train,val}/part-group-00000-*.parquet
+      conversion_status/group-00000.json
+      conversion_status/group-00000.SUCCESS.txt
 
-The Parquet schema metadata stores the token vocabulary. The downstream model reads this metadata to choose the correct vocabulary/output heads. Do not hardcode a vocabulary from another q setup.
+The JSON records counts, settings, aligned part lists, checksums and a membership
+fingerprint. Vocabulary/continuous schema metadata is embedded in the Parquets.
 
-For the paired continuous benchmark, use:
+## 5. Finalize manifests
 
-    --write-continuous-features --write-decoded-q8-features
+The Parquets already have their train/validation split. Do not pass them through
+prepare_token_parquet_pretrain_shards.py.
 
-This adds aligned fields:
+Example $WORK/campaign_plan.json for the single input above:
 
-    continuous_features
-    continuous_feature_mask
-    position_role_ids
-    decoded_continuous_features
+    {
+      "groups": [{"group_id": "group-00000", "manifest": "group-00000.json"}],
+      "input_file_count": 1,
+      "inventory_sha256": "<SHA256 of your selected input inventory>"
+    }
 
-Use these fields only when comparing direct continuous or decoded-reconstruction baselines with the tokenized input.
+Group manifest paths are relative to the plan directory. Use the actual input
+count and inventory digest. Once every group has completed:
 
-## 6. Prepare pretraining shards
+    pixi run python scripts/finalize_data_grl_conversion_manifests.py \
+      --campaign-plan "$WORK/campaign_plan.json" \
+      --status-dir "$WORK/prepared/conversion_status" \
+      --output-dir "$WORK/prepared/manifests"
 
-Create source-file-stratified train/validation shards from the exported grouped Parquet files:
+This validates group/source assignments and aligned shard counts without
+rewriting data. Place each output manifest next to its train/val directories:
 
-    pixi run python scripts/prepare_token_parquet_pretrain_shards.py \
-      --input-parquets \
-        /work/heptokens/parquet/signal_q1.parquet \
-        /work/heptokens/parquet/background_q1.parquet \
-        /work/heptokens/parquet/data_q1.parquet \
-      --output-dir /work/heptokens/shards/q1_pretrain \
-      --train-frac 0.90 \
-      --seed 42 \
-      --shard-rows 50000
+    for representation in q1 q8 continuous; do
+      cp "$WORK/prepared/manifests/${representation}_manifest.json" \
+        "$WORK/prepared/$representation/manifest.json"
+    done
 
-The output directory must contain a manifest and train/validation shards. Train from this prepared directory, not directly from one large input Parquet file.
+The prepared directories are $WORK/prepared/q1, q8 and continuous. Tokenizer
+training splits, conversion train/validation membership and downstream test
+selection are separate. Do not use capped smoke outputs for production.
 
-For a smoke test, add:
+## Other exporters
 
-    --max-rows-per-input 10000
+These remain available but are not steps in the direct Google pipeline:
 
-Do not use a smoke-test shard directory for final results.
-
-## 7. Pretrain the grouped event transformer
-
-Pretraining masks complete object token groups and predicts their residual code IDs. It learns cross-object structure from the grouped event sequences.
-
-Set model.max_quantizers to the same Q used during Parquet export:
-
-| Exported tokens | Required setting |
-| --- | ---: |
-| q1 | model.max_quantizers=1 |
-| q4 | model.max_quantizers=4 |
-| q8 | model.max_quantizers=8 |
-
-Example q1 pretraining run:
-
-    pixi run python scripts/train.py \
-      datamodule=token_parquet_pretrain \
-      model=foundation_grouped_pretrain \
-      callbacks=pretrain \
-      output_dir=/work/heptokens/results \
-      project_name=my_foundation \
-      network_name=q1_grouped_pretrain \
-      datamodule.prepared_dir=/work/heptokens/shards/q1_pretrain \
-      model.max_quantizers=1 \
-      trainer.max_epochs=10 \
-      trainer.accelerator=gpu \
-      trainer.devices=1
-
-Keep the same tokenizer setup, Parquet vocabulary, sequence layout, and maximum number of quantizers throughout pretraining.
-
-## 8. Prepare labeled classification shards
-
-For the supplied HZZ signal-versus-background workflow, create balanced train/validation/test shards:
-
-    pixi run python scripts/prepare_grouped_hzz_classification_shards.py \
-      --signal-parquet /work/heptokens/parquet/signal_q1.parquet \
-      --background-parquet /work/heptokens/parquet/background_q1.parquet \
-      --signal-dsid 345060 \
-      --background-dsid 700600 \
-      --output-dir /work/heptokens/shards/q1_hzz_classification \
-      --train-frac 0.70 \
-      --val-frac 0.15 \
-      --seed 42 \
-      --shard-rows 50000
-
-For another downstream task, create equivalent train/validation/test shards with:
-
-- a single label column;
-- source_file and event_index retained for deterministic splits;
-- no event overlap between splits;
-- a manifest describing the shard set.
-
-This helper is specific to one binary HZZ signal/background selection. 
-
-## 9. Fine-tune a classification head
-
-Start from a pretrained checkpoint and train the grouped [CLS] classification head:
-
-    pixi run python scripts/train.py \
-      datamodule=token_parquet_grouped_classification \
-      model=foundation_grouped_cls_classifier \
-      callbacks=grouped_classification \
-      output_dir=/work/heptokens/results \
-      project_name=my_downstream \
-      network_name=q1_hzz_finetuned \
-      datamodule.prepared_dir=/work/heptokens/shards/q1_hzz_classification \
-      model.backbone_ckpt_path=/work/heptokens/results/my_foundation/q1_grouped_pretrain/checkpoints/best.ckpt \
-      model.freeze_backbone=false \
-      model.max_quantizers=1 \
-      trainer.max_epochs=10 \
-      trainer.accelerator=gpu \
-      trainer.devices=1
-
-To measure the value of pretraining, run the same classifier configuration without model.backbone_ckpt_path. Keep the tokenizer setup, prepared shards, split seed, and training budget fixed.
-
-### Use masked mean pooling instead of [CLS]
-
-Use the mean-pooling classifier when you want the downstream head to average the final hidden states at all valid sequence positions, rather than classify from the final [CLS] state alone. This changes only the classification head. Keep the tokenizer checkpoints, grouped Parquet files, shard directory, and pretrained backbone unchanged.
-
-Run the mean-pooling version by replacing the classifier model:
-
-    pixi run python scripts/train.py \
-      datamodule=token_parquet_grouped_classification \
-      model=foundation_grouped_mean_classifier \
-      callbacks=grouped_classification \
-      output_dir=/work/heptokens/results \
-      project_name=my_downstream \
-      network_name=q1_hzz_mean_pool_finetuned \
-      datamodule.prepared_dir=/work/heptokens/shards/q1_hzz_classification \
-      model.backbone_ckpt_path=/work/heptokens/results/my_foundation/q1_grouped_pretrain/checkpoints/best.ckpt \
-      model.freeze_backbone=false \
-      model.max_quantizers=1 \
-      trainer.max_epochs=10 \
-      trainer.accelerator=gpu \
-      trainer.devices=1
-
-The masked mean includes [CLS] by default. Exclude it when you want the average to use only event and object positions:
-
-    model.exclude_first_position=true
-
-For a controlled [CLS] versus mean-pooling comparison, change only model=foundation_grouped_cls_classifier to model=foundation_grouped_mean_classifier, and keep every other setting fixed.
-
-## 10. Resume, monitor, and validate
-
-Resume tokenizer training from its last checkpoint:
-
-    pixi run python scripts/train.py \
-      ... \
-      ckpt_path=/work/heptokens/results/my_tokenizers/jets_full_dim8_cb16384_q1_e20/checkpoints/last.ckpt
-
-Before launching a large run, check:
-
-    test -f /work/heptokens/preprocessing/jets_log_standard.joblib
-    test -f /work/heptokens/results/my_tokenizers/jets_full_dim8_cb16384_q1_e20/checkpoints/best.ckpt
-    test -f /work/heptokens/parquet/signal_q1.parquet
-    test -d /work/heptokens/shards/q1_pretrain
-
-For every final comparison, record:
-
-1. HDF5 data selection and datamodule YAML revision.
-2. Object feature lists and preprocessing transforms.
-3. Tokenizer checkpoint for every object.
-4. Q, codebook size, codebook dimension, and sequence length.
-5. Parquet vocabulary metadata.
-6. Shard seed and split fractions.
-7. Pretraining checkpoint and fine-tuning configuration.
-
-## Repository map
-
-| Path | Purpose |
+| Script | Use |
 | --- | --- |
-| configs/datamodule/atlas_event_object.yaml | Default object features, masks, and HDF5 paths |
-| scripts/get_atlas_object_preprocessing.py | Fit object preprocessing transforms |
-| scripts/train.py | Hydra training entry point |
-| scripts/analyze_vqvae_tokenizer.py | Evaluate saved tokenizer reconstruction and codebook usage |
-| scripts/tokenize_objects_to_grouped_parquet.py | Encode object checkpoints into grouped event Parquet |
-| scripts/prepare_token_parquet_pretrain_shards.py | Build pretraining shards |
-| scripts/prepare_grouped_hzz_classification_shards.py | Build balanced HZZ classification shards |
-| configs/model/foundation_grouped_pretrain.yaml | Masked grouped-token pretraining model |
-| configs/model/foundation_grouped_cls_classifier.yaml | Grouped [CLS] classification model |
+| tokenize_objects_to_grouped_parquet.py | One grouped --output from the supplied H5s; optional continuous columns. No split. |
+| tokenize_objects_to_parquet_with_atlasopenmagic_metadata.py | Older flat token layout; no continuous output. |
+| prepare_token_parquet_pretrain_shards.py | Split already-exported Parquets. Not needed after direct conversion. |
+| prepare_grouped_hzz_classification_shards.py | Labeled shards for the specific HZZ 345060 vs ZZ 700600 task. |
+
+All four are under scripts/. For standalone grouped exports, set
+--max-seq-length 256 --event-bins 128 to match the layout above.
+--write-continuous-features adds direct continuous inputs;
+--write-decoded-q8-features additionally stores decoded reconstructions.
+
+## Tests
+
+    pixi run python -m unittest discover -s tests -v
+
+Tests cover event splitting/shuffling, saved preprocessing, checkpoint evaluation,
+nested Arrow values, aligned Q1/Q8/continuous conversion and streaming readback.
+End-to-end tests use small synthetic H5s and untrained fixture checkpoints; they
+do not establish reconstruction quality.
+
+The direct converter also passed a Zephyr GPU smoke with real H5 data and the
+saved production tokenizers: 128 events (116 train, 12 validation), exact values
+preserved across shard sizes and aligned outputs for all three representations.
