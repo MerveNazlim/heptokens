@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -86,6 +87,7 @@ class TestAnalyzeVqvaeTokenizer(unittest.TestCase):
         })
         OmegaConf.save(self.cfg, self.run / "full_config.yaml")
         self.checkpoint = self.run / "checkpoints/best.ckpt"
+        self.decoder_bias = [1.25, -0.5, 0.75]
         self.save_checkpoint(2)
 
     def save_checkpoint(self, quantizers: int) -> LitVqVae:
@@ -98,6 +100,12 @@ class TestAnalyzeVqvaeTokenizer(unittest.TestCase):
             feature_names=self.names,
             data_sample={"csts": torch.zeros(1, 2, 3)},
         ).eval()
+        # A known normalized-space prediction makes inverse reconstruction
+        # verifiable independently of the evaluator implementation.
+        with torch.no_grad():
+            output_layer = model.decoder.coder.model[-1]
+            output_layer.weight.zero_()
+            output_layer.bias.copy_(torch.tensor(self.decoder_bias))
         torch.save({
             "state_dict": model.state_dict(), "hyper_parameters": dict(model.hparams),
             "pytorch-lightning_version": lightning.__version__,
@@ -117,6 +125,19 @@ class TestAnalyzeVqvaeTokenizer(unittest.TestCase):
         self.assertEqual(args.split, "val")
         self.assertIsNone(args.h5_files)
         self.assertIsNone(args.num_events_per_file)
+
+    def test_root_entrypoint_delegates_cli_and_helpers_to_canonical_module(self) -> None:
+        from scripts import analyze_vqvae_tokenizer as canonical
+
+        spec = importlib.util.spec_from_file_location(
+            "tokenizer_evaluation_compat", ROOT / "analyze_vqvae_tokenizer.py"
+        )
+        wrapper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wrapper)
+        self.assertIs(wrapper.main, canonical.main)
+        self.assertIs(wrapper.collect_diagnostics_for_h5_files,
+                      canonical.collect_diagnostics_for_h5_files)
+        self.assertIs(wrapper.codebook_summary, canonical.codebook_summary)
 
     def test_saved_split_and_preprocessing_config_are_not_modified(self) -> None:
         self.cfg.datamodule.shuffle_mode = "legacy"
@@ -175,6 +196,39 @@ class TestAnalyzeVqvaeTokenizer(unittest.TestCase):
                 )
                 self.assertEqual(len(values), len(members))
 
+    def test_saved_eager_atlas_loader_preserves_splits_and_inverse_reconstruction(self) -> None:
+        from heptokens.data.atlas_event_mappable import AtlasEventMapDataset
+
+        cfg = OmegaConf.create(OmegaConf.to_container(self.cfg, resolve=True))
+        cfg.datamodule._target_ = "heptokens.data.atlas_event_mappable.AtlasEventMapModule"
+        for key in ("chunk_size", "shuffle_buffer_size", "split_by_domain"):
+            del cfg.datamodule[key]
+        model = analysis.load_analysis_model(self.run, None, torch.device("cpu"))
+        _, inverse = analysis.transform_list_and_cst_fn_from_cfg(cfg)
+        prediction = np.asarray(self.decoder_bias) * self.scaler.scale_ + self.scaler.mean_
+        for split in ("val", "test"):
+            with self.subTest(split=split):
+                loader = analysis.canonical_dataloader_for_h5_files(
+                    cfg=cfg, h5_files=None, split=split, batch_size=4,
+                    num_workers=0, num_events_per_file=None,
+                )
+                self.assertIsInstance(loader.dataset.dataset.datasets[0], AtlasEventMapDataset)
+                original, reconstructed, codes, n_seen = analysis.collect_diagnostics_from_loader(
+                    model=model, loader=loader, cst_inverse_transformer=inverse,
+                    device=torch.device("cpu"), max_valid_objects=200,
+                )
+                members = self.members[split]
+                expected = self.values[members][self.mask[members]]
+                self.assertEqual(n_seen, len(expected))
+                self.assertEqual(codes.shape, (len(expected), 2))
+                np.testing.assert_allclose(
+                    original[np.argsort(original[:, 0])],
+                    expected[np.argsort(expected[:, 0])], atol=1e-5,
+                )
+                np.testing.assert_allclose(
+                    reconstructed, np.tile(prediction, (len(expected), 1)), atol=1e-5
+                )
+
     def test_real_q1_q4_q8_checkpoint_evaluation_excludes_padding_and_keeps_weights(self) -> None:
         _, inverse = analysis.transform_list_and_cst_fn_from_cfg(self.cfg)
         members = self.members["val"]
@@ -193,6 +247,12 @@ class TestAnalyzeVqvaeTokenizer(unittest.TestCase):
                 )
                 self.assertEqual(n_seen, len(expected))
                 self.assertEqual(reconstructed.shape, expected.shape)
+                physical_prediction = (
+                    np.asarray(self.decoder_bias) * self.scaler.scale_ + self.scaler.mean_
+                )
+                np.testing.assert_allclose(
+                    reconstructed, np.tile(physical_prediction, (len(expected), 1)), atol=1e-5
+                )
                 self.assertEqual(codes.shape, (len(expected), quantizers))
                 self.assertTrue(np.all((codes >= 0) & (codes < 8)))
                 np.testing.assert_allclose(
@@ -250,31 +310,66 @@ class TestAnalyzeVqvaeTokenizer(unittest.TestCase):
         self.assertEqual(empty["quantizer_0"]["perplexity"], 0.0)
 
     def test_cli_evaluates_real_checkpoint_and_writes_metrics_and_plots(self) -> None:
-        output = self.root / "figures"
         before = hashlib.sha256(self.checkpoint.read_bytes()).hexdigest()
         env = dict(os.environ, PYTHONPATH=os.pathsep.join((str(ROOT / "src"),
                                                         str(ROOT / "scripts"))))
-        command = [sys.executable, str(ROOT / "scripts/analyze_vqvae_tokenizer.py"),
-                   "--run-dir", str(self.run), "--output-dir", str(output),
-                   "--device", "cpu", "--num-workers", "0", "--batch-size", "4"]
-        result = subprocess.run(command, cwd=ROOT, env=env, text=True,
-                                capture_output=True, timeout=60)
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        self.assertEqual(before, hashlib.sha256(self.checkpoint.read_bytes()).hexdigest())
-        expected = int(self.mask[self.members["val"]].sum())
-        counts = np.load(output / "codebook_counts.npy")
-        self.assertEqual(counts.shape, (2, 8))
-        np.testing.assert_array_equal(counts.sum(axis=1), [expected, expected])
-        metrics = json.loads((output / "reconstruction_metrics.json").read_text())
-        self.assertEqual(set(metrics), set(self.names))
-        self.assertTrue(all(item["n"] == expected for item in metrics.values()))
-        stats = json.loads((output / "codebook_usage_summary.json").read_text())
-        self.assertEqual(set(stats), {"quantizer_0", "quantizer_1"})
-        self.assertIn("perplexity", stats["quantizer_0"])
-        self.assertIn(f"valid_objects_analyzed: {expected}", (output / "summary.txt").read_text())
-        for filename in ("pt_reconstruction_triptych.png", "pt_overlay.png",
-                         "codebook_frequency.png", "dead_tokens.png", "residual_summary.png"):
-            self.assertGreater((output / filename).stat().st_size, 0)
+        entries = ("scripts/analyze_vqvae_tokenizer.py", "analyze_vqvae_tokenizer.py")
+        physical_prediction = (
+            np.asarray(self.decoder_bias) * self.scaler.scale_ + self.scaler.mean_
+        )
+        for split in ("val", "test"):
+            snapshots = []
+            members = self.members[split]
+            reference = self.values[members][self.mask[members]]
+            expected = len(reference)
+            for entry_index, entry in enumerate(entries):
+                with self.subTest(entrypoint=entry, split=split):
+                    output = self.root / f"figures-{split}-{entry_index}"
+                    command = [sys.executable, str(ROOT / entry),
+                               "--run-dir", str(self.run), "--output-dir", str(output),
+                               "--split", split, "--device", "cpu", "--num-workers", "0",
+                               "--batch-size", "4"]
+                    result = subprocess.run(command, cwd=ROOT, env=env, text=True,
+                                            capture_output=True, timeout=60)
+                    self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+                    self.assertEqual(
+                        before, hashlib.sha256(self.checkpoint.read_bytes()).hexdigest()
+                    )
+                    counts = np.load(output / "codebook_counts.npy")
+                    self.assertEqual(counts.shape, (2, 8))
+                    np.testing.assert_array_equal(counts.sum(axis=1), [expected, expected])
+                    metrics = json.loads((output / "reconstruction_metrics.json").read_text())
+                    self.assertEqual(set(metrics), set(self.names))
+                    for feature_index, name in enumerate(self.names):
+                        metric = metrics[name]
+                        residual = physical_prediction[feature_index] - reference[:, feature_index]
+                        self.assertEqual(metric["n"], expected)
+                        # Verify physical-unit outputs, not merely shapes or files.
+                        self.assertAlmostEqual(
+                            metric["mean_original"], float(reference[:, feature_index].mean()),
+                            delta=2e-5,
+                        )
+                        self.assertAlmostEqual(
+                            metric["mean_reconstructed"], physical_prediction[feature_index],
+                            delta=2e-5,
+                        )
+                        self.assertAlmostEqual(metric["bias"], float(residual.mean()), delta=2e-5)
+                        self.assertAlmostEqual(
+                            metric["mae"], float(np.abs(residual).mean()), delta=2e-5
+                        )
+                    stats = json.loads((output / "codebook_usage_summary.json").read_text())
+                    self.assertEqual(set(stats), {"quantizer_0", "quantizer_1"})
+                    self.assertIn("perplexity", stats["quantizer_0"])
+                    self.assertIn(
+                        f"valid_objects_analyzed: {expected}", (output / "summary.txt").read_text()
+                    )
+                    for filename in ("pt_reconstruction_triptych.png", "pt_overlay.png",
+                                     "codebook_frequency.png", "dead_tokens.png",
+                                     "residual_summary.png"):
+                        self.assertGreater((output / filename).stat().st_size, 0)
+                    snapshots.append((metrics, stats, counts.tolist()))
+            self.assertEqual(len(snapshots), 2)
+            self.assertEqual(snapshots[0], snapshots[1])
 
 
 if __name__ == "__main__":

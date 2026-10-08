@@ -175,6 +175,10 @@ Before production Parquet export, inspect the selected checkpoint:
       --split val \
       --device auto
 
+The root `analyze_vqvae_tokenizer.py` is a compatibility entrypoint that
+delegates to this same implementation; both commands share the CLI and
+evaluation behavior.
+
 The evaluator reads `full_config.yaml`, selects `best.ckpt` (falling back to
 `last.ckpt`), and reuses the saved datamodule and preprocessing transform.
 The H5 files and preprocessing `.joblib` paths in that configuration must
