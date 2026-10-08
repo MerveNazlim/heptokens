@@ -219,7 +219,7 @@ def main() -> None:
     flat_export.build_vocabulary = build_grouped_vocabulary
     flat_export.assemble_rows = assemble_grouped_rows
     flat_export.make_table = make_grouped_table
-    flat_export.main()
+    flat_export.main(supports_continuous_features=True)
 
 
 if __name__ == "__main__":

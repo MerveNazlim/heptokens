@@ -148,7 +148,7 @@ def parse_args() -> argparse.Namespace:
         "--write-continuous-features",
         action="store_true",
         help=(
-            "Write preprocessed continuous features aligned with grouped sequence "
+            "Grouped exporter only: write preprocessed continuous features aligned with sequence "
             "positions for flat and hierarchical continuous baselines."
         ),
     )
@@ -156,7 +156,7 @@ def parse_args() -> argparse.Namespace:
         "--write-decoded-q8-features",
         action="store_true",
         help=(
-            "Also decode each complete residual-code tuple with its object VQ-VAE "
+            "Grouped exporter only: also decode each complete residual-code tuple with its VQ-VAE "
             "and write decoded_continuous_features. Requires "
             "--write-continuous-features."
         ),
@@ -679,6 +679,11 @@ def assemble_rows(
     args: argparse.Namespace,
     event_values: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if vocabulary.get("continuous_schema") is not None:
+        raise ValueError(
+            "Continuous feature columns require the grouped exporter; use "
+            "scripts/tokenize_objects_to_grouped_parquet.py"
+        )
     all_tokens = np.full((batch_size, args.max_seq_length), args.pad_token_id, dtype=np.int64)
     all_types = np.zeros((batch_size, args.max_seq_length), dtype=np.int64)
     all_mask = np.zeros((batch_size, args.max_seq_length), dtype=bool)
@@ -959,9 +964,21 @@ def choose_event_token_inputs(config: dict, args: argparse.Namespace) -> list[st
     return default_inputs
 
 
-def main() -> None:
+def main(*, supports_continuous_features: bool = False) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     args = parse_args()
+
+    # Fail before loading H5 files/checkpoints or creating output files.
+    if args.write_decoded_q8_features and not args.write_continuous_features:
+        raise ValueError(
+            "--write-decoded-q8-features requires --write-continuous-features"
+        )
+    if args.write_continuous_features and not supports_continuous_features:
+        raise ValueError(
+            "--write-continuous-features and --write-decoded-q8-features "
+            "are only supported by scripts/tokenize_objects_to_grouped_parquet.py; "
+            "the flat exporter cannot align them to individual code positions"
+        )
 
     config = load_data_config(args.datamodule_config)
     collections = collection_map(config.get("object_collections") or [])
@@ -984,11 +1001,6 @@ def main() -> None:
             type_ids=TYPE_IDS,
             include_decoded_q8=args.write_decoded_q8_features,
         )
-    elif args.write_decoded_q8_features:
-        raise ValueError(
-            "--write-decoded-q8-features requires --write-continuous-features"
-        )
-
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     vocabulary_path = output_path.with_suffix(".vocab.json")

@@ -119,7 +119,7 @@ class AtlasEventObjectIterableDataset(IterableDataset):
         num_objects: int | None = None,
         max_objects: dict | None = None,
         chunk_size: int = 4096,
-        shuffle_mode: str = "legacy",
+        shuffle_mode: str = "buffered",
         shuffle_buffer_size: int = 16384,
         shuffle_file_window_size: int = 16,
     ) -> None:
@@ -377,7 +377,7 @@ class AtlasEventObjectIterableModule(BaseMapModule):
         output_mode: str = "object",
         object_type: str | None = None,
         chunk_size: int = 4096,
-        shuffle_mode: str = "legacy",
+        shuffle_mode: str = "buffered",
         shuffle_buffer_size: int = 16384,
         shuffle_file_window_size: int = 16,
         split_by_domain: bool = True,
@@ -401,6 +401,13 @@ class AtlasEventObjectIterableModule(BaseMapModule):
         if sampling_domain_fractions:
             log.warning(
                 "sampling_domain_fractions is not yet supported by the iterable loader"
+            )
+        if shuffle_mode == "buffered" and shuffle_buffer_size < self.batch_size:
+            log.warning(
+                "shuffle_buffer_size=%d is smaller than batch_size=%d; "
+                "cross-file batch mixing will be weak",
+                shuffle_buffer_size,
+                self.batch_size,
             )
 
         dataset_config = dict(self.data_config)
@@ -463,6 +470,15 @@ class AtlasEventObjectIterableModule(BaseMapModule):
             **common_dataset_kwargs,
         )
         self._train_loader_generation = 0
+
+        log.info(
+            "Iterable training shuffle: mode=%s chunk_size=%d buffer_size=%d events per worker "
+            "file_window_size=%d",
+            shuffle_mode,
+            chunk_size,
+            shuffle_buffer_size,
+            shuffle_file_window_size,
+        )
 
         log.info(
             "Iterable event-object split: train=%d events val=%d test=%d",

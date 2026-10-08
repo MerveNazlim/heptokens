@@ -330,13 +330,14 @@ def assert_aligned_tables(tables: dict[str, pa.Table]) -> None:
     row_counts = {name: table.num_rows for name, table in tables.items()}
     if len(set(row_counts.values())) != 1:
         raise ValueError(f"Representation row counts are not aligned: {row_counts}")
-    reference = tables["q1"]
+    reference_name = "q1" if "q1" in tables else next(iter(tables))
+    reference = tables[reference_name]
     for name, table in tables.items():
         for column in ("source_file", "event_index", "mask", "type_ids"):
             if not table[column].combine_chunks().equals(
                 reference[column].combine_chunks()
             ):
-                raise ValueError(f"{name} {column} values are not aligned with Q1")
+                raise ValueError(f"{name} {column} values are not aligned with {reference_name}")
 
 
 class AlignedShardWriter:
@@ -352,7 +353,14 @@ class AlignedShardWriter:
         row_group_rows: int,
         compression: str,
         seed: int,
+        representations: tuple[str, ...] = REPRESENTATIONS,
     ) -> None:
+        if not representations or len(set(representations)) != len(representations):
+            raise ValueError("Representations must be non-empty and unique")
+        if any(not re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in representations):
+            raise ValueError("Unsafe representation name")
+        self.representations = representations
+        self.reference = representations[0]
         self.output_dir = output_dir
         self.group_id = group_id
         self.split = split
@@ -360,20 +368,22 @@ class AlignedShardWriter:
         self.row_group_rows = row_group_rows
         self.compression = compression
         self.rng = np.random.default_rng(seed)
-        self.buffers = {name: [] for name in REPRESENTATIONS}
+        self.buffers = {name: [] for name in representations}
         self.buffered_rows = 0
         self.written_rows = 0
         self.shard_index = 0
-        self.files = {name: [] for name in REPRESENTATIONS}
-        for representation in REPRESENTATIONS:
+        self.files = {name: [] for name in representations}
+        for representation in representations:
             (output_dir / representation / split).mkdir(parents=True, exist_ok=True)
 
     def add(self, tables: dict[str, pa.Table]) -> None:
+        if set(tables) != set(self.representations):
+            raise ValueError("Table names differ from the writer representations")
         assert_aligned_tables(tables)
-        rows = tables["q1"].num_rows
+        rows = tables[self.reference].num_rows
         if rows == 0:
             return
-        for representation in REPRESENTATIONS:
+        for representation in self.representations:
             self.buffers[representation].append(tables[representation])
         self.buffered_rows += rows
         self._flush_full_shards()
@@ -391,7 +401,7 @@ class AlignedShardWriter:
             return
         combined = self._combined()
         offset = 0
-        while combined["q1"].num_rows - offset >= self.shard_rows:
+        while combined[self.reference].num_rows - offset >= self.shard_rows:
             self._write(
                 {
                     name: table.slice(offset, self.shard_rows)
@@ -402,7 +412,7 @@ class AlignedShardWriter:
         remainder = {
             name: table.slice(offset) for name, table in combined.items()
         }
-        remaining_rows = remainder["q1"].num_rows
+        remaining_rows = remainder[self.reference].num_rows
         self.buffers = {
             name: [table] if remaining_rows else []
             for name, table in remainder.items()
@@ -412,12 +422,12 @@ class AlignedShardWriter:
     def finish(self) -> None:
         if self.buffered_rows:
             self._write(self._combined())
-        self.buffers = {name: [] for name in REPRESENTATIONS}
+        self.buffers = {name: [] for name in self.representations}
         self.buffered_rows = 0
 
     def _write(self, tables: dict[str, pa.Table]) -> None:
         assert_aligned_tables(tables)
-        rows = tables["q1"].num_rows
+        rows = tables[self.reference].num_rows
         permutation = pa.array(
             self.rng.permutation(rows), type=pa.int64()
         )
@@ -426,6 +436,13 @@ class AlignedShardWriter:
             path = self.output_dir / representation / self.split / stem
             if path.exists():
                 raise FileExistsError(path)
+            # Rebase sliced columns before take: some Arrow versions mishandle
+            # non-zero offsets in nested fixed-size lists. This copies at most
+            # one bounded shard, never a complete input file.
+            table = pa.Table.from_arrays(
+                [column.combine_chunks() for column in table.columns],
+                schema=table.schema,
+            )
             pq.write_table(
                 table.take(permutation),
                 path,

@@ -24,9 +24,9 @@ pin_memory: false
 persistent_workers: false
 multiprocessing_context:
 chunk_size: 4096
-# Both modes use the same seeded global event-level split. Preserve Google's
-# original ordering by default; opt into bounded cross-file training mixing.
-shuffle_mode: legacy
+# Both modes use the same seeded global event-level split. Mix training events
+# across files by default; use legacy only to reproduce original Google ordering.
+shuffle_mode: buffered
 # Only used by buffered mode, per DataLoader worker.
 shuffle_buffer_size: 16384
 shuffle_file_window_size: 16

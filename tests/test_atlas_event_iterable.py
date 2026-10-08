@@ -19,7 +19,7 @@ from heptokens.data.atlas_event_iterable import (
 class TestAtlasEventIterable(unittest.TestCase):
     @staticmethod
     def _mixed_domain_dataset(
-        directory: str, *, shuffle: bool = True, shuffle_mode: str = "buffered"
+        directory: str, *, shuffle: bool = True, shuffle_mode: str | None = None
     ):
         raw_specs = []
         object_collections = [
@@ -59,7 +59,7 @@ class TestAtlasEventIterable(unittest.TestCase):
             object_collections=object_collections,
             object_type="jets",
             chunk_size=8,
-            shuffle_mode=shuffle_mode,
+            **({"shuffle_mode": shuffle_mode} if shuffle_mode is not None else {}),
             shuffle_buffer_size=32,
         )
 
@@ -168,8 +168,9 @@ class TestAtlasEventIterable(unittest.TestCase):
 
             first_loader = module.train_dataloader()
             second_loader = module.train_dataloader()
-            self.assertIsNone(first_loader.generator)
-            self.assertIsNone(second_loader.generator)
+            self.assertEqual(module.train_set.shuffle_mode, "buffered")
+            self.assertEqual(first_loader.generator.initial_seed(), 42)
+            self.assertEqual(second_loader.generator.initial_seed(), 43)
 
             module = AtlasEventObjectIterableModule(
                 data_paths=[str(path)],
@@ -181,13 +182,40 @@ class TestAtlasEventIterable(unittest.TestCase):
                 num_workers=0,
                 batch_size=2,
                 transforms={},
-                shuffle_mode="buffered",
+                shuffle_mode="legacy",
                 split_by_domain=False,
             )
             first_loader = module.train_dataloader()
             second_loader = module.train_dataloader()
-            self.assertEqual(first_loader.generator.initial_seed(), 42)
-            self.assertEqual(second_loader.generator.initial_seed(), 43)
+            self.assertIsNone(first_loader.generator)
+            self.assertIsNone(second_loader.generator)
+
+    def test_default_and_yaml_select_buffered_shuffle(self) -> None:
+        from omegaconf import OmegaConf
+
+        config = OmegaConf.load(
+            Path(__file__).resolve().parents[1]
+            / "configs/datamodule/atlas_event_object_iterable.yaml"
+        )
+        self.assertEqual(config.shuffle_mode, "buffered")
+        with tempfile.TemporaryDirectory() as directory:
+            default = self._mixed_domain_dataset(directory)
+            explicit = AtlasEventObjectIterableDataset(
+                file_specs=default.file_specs,
+                split_id=default.split_id,
+                seed=default.seed,
+                shuffle=True,
+                object_collections=default.object_collections,
+                object_type=default.object_type,
+                chunk_size=default.chunk_size,
+                shuffle_buffer_size=default.shuffle_buffer_size,
+                shuffle_mode="buffered",
+            )
+            self.assertEqual(default.shuffle_mode, "buffered")
+            self.assertEqual(
+                [int(x["csts"][0, 0]) for x in default],
+                [int(x["csts"][0, 0]) for x in explicit],
+            )
 
     def test_bounded_shuffle_preserves_exact_coverage_and_reshuffles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -201,7 +229,7 @@ class TestAtlasEventIterable(unittest.TestCase):
             self.assertEqual(sorted(second), expected)
             self.assertNotEqual(first, second)
 
-    def test_legacy_default_matches_original_google_rng_order(self) -> None:
+    def test_explicit_legacy_matches_original_google_rng_order(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dataset = self._mixed_domain_dataset(directory, shuffle_mode="legacy")
             # Independent reconstruction of Google's original file/chunk/event

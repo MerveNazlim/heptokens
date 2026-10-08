@@ -93,6 +93,58 @@ def _q1_table(reference: pa.Table) -> pa.Table:
 
 
 class TestDataGrlMultiRepresentation(unittest.TestCase):
+    def test_q4_only_writer_preserves_all_rows_schema_and_metadata(self) -> None:
+        reference = _combined_table(rows=13)
+        tokens = np.arange(13 * 3 * 4, dtype=np.int64).reshape(13, 3, 4)
+        q4 = _q1_table(reference).set_column(
+            0, "tokens", _nested(tokens, pa.int64())
+        ).replace_schema_metadata(
+            {TOKEN_VOCABULARY_KEY: b'{"vocab_size":2048,"max_quantizers":4}'}
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            writer = AlignedShardWriter(
+                root, group_id="group-00000", split="train", shard_rows=3,
+                row_group_rows=2, compression="snappy", seed=43,
+                representations=("q4",),
+            )
+            writer.add({"q4": q4.slice(0, 2)})
+            writer.add({"q4": q4.slice(2)})
+            writer.finish()
+            self.assertEqual(writer.written_rows, 13)
+            self.assertEqual(writer.shard_index, 5)
+            self.assertEqual(set(writer.files), {"q4"})
+            self.assertFalse((root / "q1").exists())
+            parts = [pq.read_table(root / entry["path"]) for entry in writer.files["q4"]]
+            self.assertEqual([part.num_rows for part in parts], [3, 3, 3, 3, 1])
+            for part in parts:
+                # Parquet normalizes nested child names from item to element.
+                self.assertTrue(part.schema.equals(q4.schema))
+                self.assertEqual(part.schema.metadata, q4.schema.metadata)
+            actual = pq.read_table(root / "q4/train").sort_by("event_index")
+            self.assertTrue(actual.equals(q4))
+
+    def test_writer_rejects_missing_or_unexpected_representations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            writer = AlignedShardWriter(
+                Path(directory), group_id="group-00000", split="train",
+                shard_rows=3, row_group_rows=2, compression="snappy", seed=43,
+                representations=("q4",),
+            )
+            with self.assertRaisesRegex(ValueError, "Table names"):
+                writer.add({"q1": _q1_table(_combined_table())})
+            self.assertEqual(writer.written_rows, 0)
+
+    def test_writer_rejects_empty_duplicate_or_unsafe_representation_names(self) -> None:
+        for names in ((), ("q4", "q4"), ("../q4",)):
+            with self.subTest(representations=names), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(ValueError):
+                    AlignedShardWriter(
+                        Path(directory), group_id="group-00000", split="train",
+                        shard_rows=3, row_group_rows=2, compression="snappy", seed=43,
+                        representations=names,
+                    )
+
     def test_preflight_records_zero_byte_and_unreadable_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -173,6 +225,15 @@ class TestDataGrlMultiRepresentation(unittest.TestCase):
                     )
                 self.assertTrue(identity_tables[0].equals(identity_tables[1]))
                 self.assertTrue(identity_tables[0].equals(identity_tables[2]))
+
+            # Check actual code/feature values, not only row identities/counts.
+            # This covers non-zero-offset full shards and the final remainder.
+            for representation, expected in (
+                ("q1", q1), ("q8", q8), ("continuous", continuous)
+            ):
+                actual = pq.read_table(root / representation / "train").sort_by("event_index")
+                self.assertTrue(actual.equals(expected))
+                self.assertEqual(actual.schema.metadata, expected.schema.metadata)
 
 
 if __name__ == "__main__":
