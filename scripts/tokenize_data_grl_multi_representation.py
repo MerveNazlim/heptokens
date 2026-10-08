@@ -359,6 +359,8 @@ class AlignedShardWriter:
             raise ValueError("Representations must be non-empty and unique")
         if any(not re.fullmatch(r"[a-z][a-z0-9_]*", name) for name in representations):
             raise ValueError("Unsafe representation name")
+        if shard_rows <= 0 or row_group_rows <= 0:
+            raise ValueError("shard_rows and row_group_rows must be positive")
         self.representations = representations
         self.reference = representations[0]
         self.output_dir = output_dir
@@ -496,6 +498,10 @@ def encode_batch(
             preprocessors[object_name],
             object_name,
         )
+        if not torch.isfinite(csts[object_mask]).all():
+            raise ValueError(
+                f"{object_name} saved preprocessing produced non-finite valid features"
+            )
         q1_indices = flat_export.encode_object_batch(
             q1_models[object_name], csts, object_mask, device
         )
@@ -532,6 +538,13 @@ def convert(args: argparse.Namespace) -> dict:
     preprocess_map = flat_export.parse_path_map(
         args.preprocess_transformers, item_name="preprocess transformer"
     )
+    if set(preprocess_map) != set(args.object_order):
+        raise ValueError(
+            "Direct conversion requires exactly one saved preprocessing transformer "
+            "for each object: "
+            f"missing={sorted(set(args.object_order) - set(preprocess_map))}, "
+            f"unexpected={sorted(set(preprocess_map) - set(args.object_order))}"
+        )
     q1_models = flat_export.load_models(q1_checkpoint_map, device)
     q8_models = flat_export.load_models(q8_checkpoint_map, device)
     preprocessors = flat_export.load_preprocessors(preprocess_map)

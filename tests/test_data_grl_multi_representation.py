@@ -93,6 +93,17 @@ def _q1_table(reference: pa.Table) -> pa.Table:
 
 
 class TestDataGrlMultiRepresentation(unittest.TestCase):
+    def test_writer_rejects_nonpositive_shard_and_row_group_sizes(self) -> None:
+        for shard_rows, row_group_rows in ((0, 2), (-1, 2), (3, 0), (3, -1)):
+            with self.subTest(shard_rows=shard_rows, row_group_rows=row_group_rows), \
+                    tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(ValueError, "must be positive"):
+                    AlignedShardWriter(
+                        Path(directory), group_id="group-00000", split="train",
+                        shard_rows=shard_rows, row_group_rows=row_group_rows,
+                        compression="snappy", seed=43,
+                    )
+
     def test_q4_only_writer_preserves_all_rows_schema_and_metadata(self) -> None:
         reference = _combined_table(rows=13)
         tokens = np.arange(13 * 3 * 4, dtype=np.int64).reshape(13, 3, 4)

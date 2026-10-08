@@ -35,6 +35,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--object-type", default="jets", help="Object collection to fit.")
     parser.add_argument(
+        "--fit-split", choices=["all", "train"], default="all",
+        help="Use train to match the ordered input list's seeded tokenizer training split.",
+    )
+    parser.add_argument(
         "--mode",
         choices=["quantile", "log_quantile", "log_standard", "standard"],
         default="log_standard",
@@ -99,6 +103,32 @@ def feature_name(path: str) -> str:
     return Path(path).name
 
 
+def training_event_masks(
+    h5_files: list[str], input_path: str, config: dict,
+    num_events_per_file: int | None, seed: int,
+) -> list[np.ndarray]:
+    """Select the same global training events as the eager/iterable object loaders."""
+    from heptokens.data.atlas_event_iterable import _assign_global_event_splits
+
+    train_frac = float(config.get("train_frac", 0.7))
+    val_frac = float(config.get("val_frac", 0.15))
+    test_frac = float(config.get("test_frac", 0.15))
+    if min(train_frac, val_frac, test_frac) < 0 or not np.isclose(
+        train_frac + val_frac + test_frac, 1.0
+    ):
+        raise ValueError("Tokenizer train/val/test fractions must be nonnegative and sum to 1")
+    specs = []
+    for path in h5_files:
+        with h5py.File(path, "r") as handle:
+            count = len(handle[input_path])
+        if num_events_per_file is not None:
+            count = min(count, num_events_per_file)
+        specs.append((path, count, "unspecified"))
+    return [spec.split_ids == 0 for spec in _assign_global_event_splits(
+        specs, train_frac, val_frac, seed
+    )]
+
+
 def read_valid_objects(
     *,
     h5_files: list[str],
@@ -107,11 +137,12 @@ def read_valid_objects(
     max_objects: int,
     num_events_per_file: int | None,
     rng: np.random.Generator,
+    event_selections: list[np.ndarray] | None = None,
 ) -> np.ndarray:
     chunks = []
     collected = 0
 
-    for file_path in h5_files:
+    for file_index, file_path in enumerate(h5_files):
         if collected >= max_objects:
             break
 
@@ -132,6 +163,12 @@ def read_valid_objects(
             csts = np.clip(csts, -1e4, 1e4)
 
             mask = handle[mask_path][sl].astype(bool)
+            if event_selections is not None:
+                selected = event_selections[file_index]
+                if len(selected) != n_events:
+                    raise ValueError("Preprocessing event selection does not match the H5 event cap")
+                csts = csts[selected]
+                mask = mask[selected]
             valid = csts[mask]
 
         if len(valid) == 0:
@@ -174,13 +211,25 @@ def main() -> None:
     log.info("Log features: %s", [feature_names[idx] for idx in log_indices])
 
     rng = np.random.default_rng(args.seed)
+    event_selections = None
+    event_cap = args.num_events_per_file
+    if args.fit_split == "train":
+        configured_cap = cfg.get("num_events")
+        if configured_cap is not None:
+            event_cap = int(configured_cap) if event_cap is None else min(
+                event_cap, int(configured_cap)
+            )
+        event_selections = training_event_masks(
+            list(args.h5_files), input_paths[0], cfg, event_cap, args.seed
+        )
     objects = read_valid_objects(
         h5_files=list(args.h5_files),
         input_paths=input_paths,
         mask_path=mask_path,
         max_objects=args.max_objects,
-        num_events_per_file=args.num_events_per_file,
+        num_events_per_file=event_cap,
         rng=rng,
+        event_selections=event_selections,
     )
     log.info("Fitting %s transformer on %d objects with %d features", args.mode, len(objects), objects.shape[1])
 
@@ -209,6 +258,11 @@ def main() -> None:
         "log_offset": args.log_offset,
         "n_objects_fit": int(len(objects)),
         "h5_files": list(args.h5_files),
+        "fit_split": args.fit_split,
+        "seed": args.seed,
+        "num_events_per_file": event_cap,
+        "train_frac": cfg.get("train_frac", 0.7) if args.fit_split == "train" else None,
+        "val_frac": cfg.get("val_frac", 0.15) if args.fit_split == "train" else None,
     }
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     log.info("Saved transformer to %s", transformer_path)
