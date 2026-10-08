@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import analyze_vqvae_tokenizer as analysis  # noqa: E402
 from heptokens.models.coders import CoderModel, Decoder, Encoder  # noqa: E402
 from heptokens.models.vq_vae import LitVqVae  # noqa: E402
+from heptokens.data.transforms import create_preprocessing_transformer  # noqa: E402
 
 
 class TestAnalyzeVqvaeTokenizer(unittest.TestCase):
@@ -370,6 +371,290 @@ class TestAnalyzeVqvaeTokenizer(unittest.TestCase):
                     snapshots.append((metrics, stats, counts.tolist()))
             self.assertEqual(len(snapshots), 2)
             self.assertEqual(snapshots[0], snapshots[1])
+
+    def lepton_runs(self, eager: bool = False) -> dict:
+        """Real, differently shaped ATLAS collections and separate saved scalers."""
+        ids = np.arange(37, dtype=np.float32)
+        runs = {}
+        for object_type, features, slots, offset in (
+            ("electrons", ["pt", "eta", "phi", "charge", "ptvarcone20", "topoetcone20",
+                           "LHMedium", "LHTight"], 2, 0.0),
+            ("muons", ["pt", "eta", "phi", "charge", "ptvarcone30", "topoetcone20"],
+             3, 0.7),
+        ):
+            raw = np.column_stack(
+                [20 + offset * 20 + ids, 0.02 * ids - offset, 0.03 * ids + offset]
+                + [ids * (index + 1) / 100 for index in range(len(features) - 3)]
+            ).astype(np.float32)
+            mask = np.zeros((37, slots), dtype=bool)
+            mask[:, 0] = True
+            start = 0
+            for path, length in zip(self.paths, (20, 17)):
+                with h5py.File(path, "a") as handle:
+                    if f"common/{object_type}" in handle:
+                        del handle[f"common/{object_type}"]
+                    group = handle.create_group(f"common/{object_type}")
+                    for feature_index, name in enumerate(features):
+                        values = np.full((length, slots), -999.0, dtype=np.float32)
+                        values[:, 0] = raw[start:start + length, feature_index]
+                        group.create_dataset(name, data=values)
+                    group.create_dataset("mask", data=mask[start:start + length])
+                start += length
+
+            preprocessor = create_preprocessing_transformer(
+                mode="log_standard", log_feature_indices=[0], n_features=len(features)
+            ).fit(raw[self.members["train"]])
+            run = self.root / f"{object_type}-{'eager' if eager else 'stream'}"
+            (run / "checkpoints").mkdir(parents=True, exist_ok=True)
+            joblib.dump(preprocessor, run / "preprocessor.joblib")
+            cfg = OmegaConf.create(OmegaConf.to_container(self.cfg, resolve=True))
+            cfg.datamodule.object_type = object_type
+            cfg.datamodule.num_objects = slots
+            cfg.datamodule.object_collections = [{
+                "object_name": object_type, "mask_input": f"common/{object_type}/mask",
+                "inputs": [f"common/{object_type}/{name}" for name in features],
+            }]
+            cfg.datamodule.transforms.preprocess.cst_fn.filename = str(run / "preprocessor.joblib")
+            if eager:
+                cfg.datamodule._target_ = "heptokens.data.atlas_event_mappable.AtlasEventMapModule"
+                for key in ("chunk_size", "shuffle_buffer_size", "split_by_domain"):
+                    del cfg.datamodule[key]
+            OmegaConf.save(cfg, run / "full_config.yaml")
+            bias = np.linspace(-0.2, 0.4, len(features), dtype=np.float32) + offset
+            coder = functools.partial(CoderModel, hidden_dims=[8])
+            model = LitVqVae(
+                encoder=functools.partial(Encoder, model=coder),
+                decoder=functools.partial(Decoder, model=coder), codebook_size=8,
+                codebook_dim=3, num_quantizers=2, feature_names=features,
+                data_sample={"csts": torch.zeros(1, slots, len(features))},
+            ).eval()
+            with torch.no_grad():
+                output_layer = model.decoder.coder.model[-1]
+                output_layer.weight.zero_()
+                output_layer.bias.copy_(torch.from_numpy(bias))
+            torch.save({
+                "state_dict": model.state_dict(), "hyper_parameters": dict(model.hparams),
+                "pytorch-lightning_version": lightning.__version__,
+            }, run / "checkpoints/best.ckpt")
+            # Independently invert log+standard preprocessing for known decoder output.
+            final = preprocessor.final_transformer
+            prediction = bias * final.scale_ + final.mean_
+            prediction[0] = np.exp(prediction[0]) - 1
+            runs[object_type] = dict(
+                cfg=cfg, run=run, raw=raw, features=features,
+                preprocessor=preprocessor, prediction=prediction,
+                model=analysis.load_analysis_model(run, None, torch.device("cpu")),
+            )
+        return runs
+
+    @staticmethod
+    def expected_lepton_observables(electron, muon) -> dict:
+        deta = electron[1] - muon[1]
+        dphi = (electron[2] - muon[2] + np.pi) % (2 * np.pi) - np.pi
+        vectors = []
+        for values, mass in ((electron, 0.000511), (muon, 0.10566)):
+            pt, eta, phi = values[:3]
+            momentum = np.array([pt * np.cos(phi), pt * np.sin(phi), pt * np.sinh(eta)])
+            vectors.append(np.r_[np.sqrt(momentum @ momentum + mass ** 2), momentum])
+        total = vectors[0] + vectors[1]
+        return {"dR_ll": np.hypot(deta, dphi),
+                "m_ll": np.sqrt(max(total[0] ** 2 - total[1:] @ total[1:], 0))}
+
+    def derived_loaders(self, runs, split="val", **overrides):
+        return analysis.aligned_lepton_dataloaders(
+            electron_cfg=runs["electrons"]["cfg"], muon_cfg=runs["muons"]["cfg"],
+            **{"h5_files": None, "split": split, "batch_size": 4, "num_workers": 0,
+               "num_events_per_file": None, **overrides},
+        )
+
+    def derived_values(self, runs, loaders, max_events=200):
+        return analysis.collect_lepton_pair_diagnostics(
+            electron_model=runs["electrons"]["model"], muon_model=runs["muons"]["model"],
+            electron_loader=loaders[0], muon_loader=loaders[1],
+            electron_inverse_transformer=runs["electrons"]["preprocessor"],
+            muon_inverse_transformer=runs["muons"]["preprocessor"],
+            electron_feature_names=runs["electrons"]["features"],
+            muon_feature_names=runs["muons"]["features"],
+            device=torch.device("cpu"), max_events=max_events,
+        )
+
+    def test_derived_leptons_use_saved_preprocessing_splits_and_physical_units(self) -> None:
+        for eager in (False, True):
+            runs = self.lepton_runs(eager=eager)
+            for split in ("val", "test"):
+                with self.subTest(eager=eager, split=split):
+                    loaders = self.derived_loaders(runs, split=split, num_workers=2)
+                    self.assertTrue(all(loader.num_workers == 0 for loader in loaders))
+                    snapshots = [{k: v.clone() for k, v in run["model"].state_dict().items()}
+                                 for run in runs.values()]
+                    with patch.object(runs["electrons"]["model"], "encode",
+                                      wraps=runs["electrons"]["model"].encode) as e_encode, \
+                         patch.object(runs["muons"]["model"], "encode",
+                                      wraps=runs["muons"]["model"].encode) as m_encode:
+                        derived = self.derived_values(runs, loaders)
+                    members = self.members[split] if eager else np.sort(self.members[split])
+                    references = [self.expected_lepton_observables(
+                        runs["electrons"]["raw"][i], runs["muons"]["raw"][i]
+                    ) for i in members]
+                    prediction = self.expected_lepton_observables(
+                        runs["electrons"]["prediction"], runs["muons"]["prediction"]
+                    )
+                    for name, (original, reconstructed) in derived.items():
+                        self.assertEqual(len(original), len(members))  # 7 val, 8 test, NOT 37.
+                        np.testing.assert_allclose(original, [r[name] for r in references],
+                                                   rtol=2e-5, atol=2e-5)
+                        np.testing.assert_allclose(reconstructed, prediction[name],
+                                                   rtol=2e-5, atol=2e-5)
+                    for run, encode, snapshot in zip(
+                        runs.values(), (e_encode, m_encode), snapshots
+                    ):
+                        batches = [call.args[0] for call in encode.call_args_list]
+                        normalized = torch.cat([b["csts"][b["mask"]] for b in batches]).numpy()
+                        np.testing.assert_allclose(
+                            normalized, run["preprocessor"].transform(run["raw"][members]),
+                            rtol=2e-5, atol=2e-5,
+                        )
+                        for key, value in run["model"].state_dict().items():
+                            torch.testing.assert_close(value, snapshot[key], rtol=0, atol=0)
+
+    def test_derived_leptons_skip_missing_objects_and_cap_after_split(self) -> None:
+        runs = self.lepton_runs()
+        excluded = np.sort(self.members["val"])[:2]
+        start = 0
+        for path, length in zip(self.paths, (20, 17)):
+            with h5py.File(path, "a") as handle:
+                for index in excluded:
+                    if start <= index < start + length:
+                        handle["common/electrons/mask"][index - start, 0] = False
+            start += length
+        values = self.derived_values(runs, self.derived_loaders(runs), max_events=3)
+        members = [i for i in np.sort(self.members["val"]) if i not in excluded][:3]
+        for name, (original, _) in values.items():
+            expected = [self.expected_lepton_observables(
+                runs["electrons"]["raw"][i], runs["muons"]["raw"][i]
+            )[name] for i in members]
+            np.testing.assert_allclose(original, expected, rtol=2e-5, atol=2e-5)
+
+    def test_derived_alignment_rejects_different_inputs_and_membership(self) -> None:
+        for eager in (False, True):
+            runs = self.lepton_runs(eager=eager)
+            baseline = OmegaConf.to_container(runs["muons"]["cfg"], resolve=True)
+            for field, value, message in (
+                ("data_paths", list(reversed(self.paths)), "ordered H5 files"),
+                ("seed", 43, "event splits"),
+                ("num_events", 19, "event splits"),
+            ):
+                with self.subTest(eager=eager, field=field):
+                    runs["muons"]["cfg"] = OmegaConf.create(baseline)
+                    runs["muons"]["cfg"].datamodule[field] = value
+                    with self.assertRaisesRegex(ValueError, message):
+                        self.derived_loaders(runs)
+        runs = self.lepton_runs()
+        with self.assertRaisesRegex(ValueError, "val or test"):
+            self.derived_loaders(runs, split="train")
+        runs["muons"]["cfg"].datamodule._target_ = (
+            "heptokens.data.atlas_event_mappable.AtlasEventMapModule"
+        )
+        for key in ("chunk_size", "shuffle_buffer_size", "split_by_domain"):
+            del runs["muons"]["cfg"].datamodule[key]
+        with self.assertRaisesRegex(ValueError, "mixing loader types"):
+            self.derived_loaders(runs)
+
+    def test_derived_collection_rejects_silent_loader_truncation(self) -> None:
+        runs = self.lepton_runs()
+        e_batches, m_batches = [list(loader) for loader in self.derived_loaders(runs)]
+        with self.assertRaisesRegex(ValueError, "numbers of batches"):
+            self.derived_values(runs, (e_batches, m_batches[:-1]))
+        m_batches[0] = {key: value[:1] for key, value in m_batches[0].items()}
+        with self.assertRaisesRegex(ValueError, "event counts"):
+            self.derived_values(runs, (e_batches, m_batches))
+
+    def test_derived_file_override_and_event_cap_use_canonical_split(self) -> None:
+        runs = self.lepton_runs()
+        loaders = self.derived_loaders(
+            runs, h5_files=[self.paths[0]], num_events_per_file=12
+        )
+        selected = loaders[0].dataset.file_specs[0].split_ids == 1
+        members = np.flatnonzero(selected)
+        self.assertEqual(len(selected), 12)
+        values = self.derived_values(runs, loaders)
+        for name, (original, _) in values.items():
+            expected = [self.expected_lepton_observables(
+                runs["electrons"]["raw"][i], runs["muons"]["raw"][i]
+            )[name] for i in members]
+            np.testing.assert_allclose(original, expected, rtol=2e-5, atol=2e-5)
+        self.assertIsNone(runs["electrons"]["cfg"].datamodule.num_events)
+        self.assertEqual(list(runs["muons"]["cfg"].datamodule.data_paths), self.paths)
+
+    def test_derived_cli_rejects_incomplete_or_nonheldout_requests(self) -> None:
+        for extra in (
+            ["--derived-electron-run-dir", "electron"],
+            ["--derived-electron-run-dir", "electron", "--derived-muon-run-dir", "muon",
+             "--split", "train"],
+            ["--derived-electron-run-dir", "electron", "--derived-muon-run-dir", "muon",
+             "--max-derived-events", "0"],
+        ):
+            with self.subTest(extra=extra), patch.object(
+                sys, "argv", ["analyze_vqvae_tokenizer.py", "--run-dir", str(self.run), *extra]
+            ), patch("sys.stderr"):
+                with self.assertRaises(SystemExit) as error:
+                    analysis.parse_args()
+                self.assertEqual(error.exception.code, 2)
+
+    def test_derived_cli_writes_physical_metrics_from_saved_runs(self) -> None:
+        runs = self.lepton_runs()
+        output = self.root / "derived-cli"
+        saved_files = [
+            run["run"] / name for run in runs.values()
+            for name in ("full_config.yaml", "preprocessor.joblib", "checkpoints/best.ckpt")
+        ]
+        hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in saved_files]
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(
+            (str(ROOT / "src"), str(ROOT / "scripts"))
+        ))
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "analyze_vqvae_tokenizer.py"), "--run-dir", str(self.run),
+             "--output-dir", str(output), "--device", "cpu", "--split", "test",
+             "--batch-size", "4", "--derived-electron-run-dir", str(runs["electrons"]["run"]),
+             "--derived-muon-run-dir", str(runs["muons"]["run"])],
+            cwd=ROOT, env=env, text=True, capture_output=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        summary = json.loads((output / "derived_leptons/derived_lepton_metrics.json").read_text())
+        prediction = self.expected_lepton_observables(
+            runs["electrons"]["prediction"], runs["muons"]["prediction"]
+        )
+        for name in ("dR_ll", "m_ll"):
+            reference = np.array([self.expected_lepton_observables(
+                runs["electrons"]["raw"][i], runs["muons"]["raw"][i]
+            )[name] for i in self.members["test"]])
+            self.assertEqual(summary[name]["n"], 8)
+            self.assertAlmostEqual(summary[name]["mae"],
+                                   float(np.abs(prediction[name] - reference).mean()), delta=2e-5)
+            self.assertGreater((output / f"derived_leptons/{name}_reconstruction_triptych.png")
+                               .stat().st_size, 0)
+        self.assertEqual(hashes, [
+            hashlib.sha256(path.read_bytes()).hexdigest() for path in saved_files
+        ])
+
+    def test_derived_refuses_uninvertible_saved_preprocessing(self) -> None:
+        runs = self.lepton_runs()
+        cfg = runs["muons"]["cfg"]
+        cfg.datamodule.transforms = {"preprocess": {
+            "_target_": "heptokens.data.collation.collate_and_transform",
+            "_partial_": True, "do_default_collate": False,
+        }}
+        OmegaConf.save(cfg, runs["muons"]["run"] / "full_config.yaml")
+        args = Namespace(
+            derived_electron_run_dir=str(runs["electrons"]["run"]),
+            derived_muon_run_dir=str(runs["muons"]["run"]), h5_files=None,
+            split="val", batch_size=4, num_workers=0, num_events_per_file=None,
+            max_derived_events=200,
+        )
+        with self.assertRaisesRegex(ValueError, "invertible saved object preprocessing"):
+            analysis.run_derived_lepton_diagnostics(
+                args=args, output_dir=self.root, device=torch.device("cpu")
+            )
 
 
 if __name__ == "__main__":

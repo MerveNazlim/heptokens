@@ -6,6 +6,7 @@ import argparse
 import functools
 import json
 import logging
+from itertools import zip_longest
 from pathlib import Path
 
 import hydra
@@ -13,8 +14,9 @@ import matplotlib
 import numpy as np
 import torch
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from torch.utils.data import DataLoader
+from torch.utils.data import ConcatDataset, DataLoader, Subset
 
+from heptokens.data.atlas_event_iterable import AtlasEventObjectIterableDataset
 from heptokens.data.atlas_event_mappable import AtlasEventMapDataset
 from heptokens.models.vq_vae import LitVqVae
 
@@ -23,27 +25,6 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 log = logging.getLogger(__name__)
 
-
-DATAMODULE_KEYS = {
-    "_target_",
-    "data_path",
-    "data_paths",
-    "data_domains",
-    "sampling_domain_fractions",
-    "sampling_balance_by",
-    "sampling_num_samples",
-    "train_frac",
-    "val_frac",
-    "test_frac",
-    "seed",
-    "n_classes",
-    "num_workers",
-    "batch_size",
-    "pin_memory",
-    "persistent_workers",
-    "multiprocessing_context",
-    "transforms",
-}
 
 DEFAULT_OBJECT_FEATURES = {
     "jets": [
@@ -188,7 +169,15 @@ def parse_args() -> argparse.Namespace:
         default=200_000,
         help="Maximum number of events with at least two leptons for derived lepton plots.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if bool(args.derived_electron_run_dir) != bool(args.derived_muon_run_dir):
+        parser.error("Derived diagnostics require both electron and muon run directories")
+    if args.derived_electron_run_dir:
+        if args.split == "train":
+            parser.error("Derived lepton diagnostics require --split val or test")
+        if args.max_derived_events <= 0:
+            parser.error("--max-derived-events must be positive")
+    return args
 
 
 def choose_device(device: str) -> torch.device:
@@ -209,31 +198,6 @@ def find_checkpoint(run_dir: Path, checkpoint: str | None) -> Path:
         if path.exists():
             return path
     raise FileNotFoundError(f"No best.ckpt or last.ckpt found in {run_dir / 'checkpoints'}")
-
-
-def dataset_kwargs_from_cfg(
-    cfg,
-    args: argparse.Namespace,
-    run_dir: Path,
-) -> tuple[list[str], dict]:
-    datamodule = OmegaConf.to_container(cfg.datamodule, resolve=True)
-    if args.h5_files:
-        data_paths = list(args.h5_files)
-    elif datamodule.get("data_paths"):
-        data_paths = list(datamodule["data_paths"])
-    else:
-        data_paths = [datamodule["data_path"]]
-
-    data_paths = [
-        str((run_dir / path).resolve()) if not Path(path).is_absolute() else str(path)
-        for path in data_paths
-    ]
-
-    dataset_kwargs = {
-        key: value for key, value in datamodule.items() if key not in DATAMODULE_KEYS
-    }
-    dataset_kwargs["num_events"] = args.num_events_per_file
-    return data_paths, dataset_kwargs
 
 
 def transform_list_and_cst_fn_from_cfg(cfg) -> tuple[list, object | None]:
@@ -957,15 +921,90 @@ def decode_event_batch(
     model: LitVqVae,
     batch: dict,
     device: torch.device,
+    cst_inverse_transformer=None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     batch = to_device(batch, device)
     z_q, _, _ = model.encode(batch)
     recon = model.decode(z_q, batch)
-    return (
-        batch["csts"].detach().cpu().float().numpy(),
-        recon.detach().cpu().float().numpy(),
-        batch["mask"].detach().cpu().bool().numpy(),
+    original = batch["csts"].detach().cpu().float().numpy().copy()
+    reconstruction = recon.detach().cpu().float().numpy().copy()
+    mask = batch["mask"].detach().cpu().bool().numpy()
+    if cst_inverse_transformer is not None and np.any(mask):
+        original[mask] = cst_inverse_transformer.inverse_transform(original[mask])
+        reconstruction[mask] = cst_inverse_transformer.inverse_transform(reconstruction[mask])
+    return original, reconstruction, mask
+
+
+def aligned_lepton_dataloaders(
+    *,
+    electron_cfg,
+    muon_cfg,
+    h5_files: list[str] | None,
+    split: str,
+    batch_size: int,
+    num_workers: int,
+    num_events_per_file: int | None,
+) -> tuple[DataLoader, DataLoader]:
+    """Use saved held-out loaders, refusing unverified event pairing."""
+    if split not in {"val", "test"}:
+        raise ValueError("Derived lepton diagnostics require --split val or test")
+    if num_workers:
+        log.info("Using num_workers=0 for derived diagnostics to preserve paired event order")
+    loader_args = argparse.Namespace(
+        h5_files=h5_files, num_events_per_file=num_events_per_file,
+        batch_size=batch_size, num_workers=0,
     )
+    configs = [analysis_datamodule_cfg(cfg, loader_args) for cfg in (electron_cfg, muon_cfg)]
+    paths = [
+        [str(Path(path).resolve()) for path in (cfg.get("data_paths") or [cfg.data_path])]
+        for cfg in configs
+    ]
+    if paths[0] != paths[1]:
+        raise ValueError("Electron and muon diagnostics require the same ordered H5 files")
+
+    loaders = [
+        canonical_dataloader_for_h5_files(
+            cfg=cfg, h5_files=h5_files, split=split, batch_size=batch_size,
+            num_workers=0, num_events_per_file=num_events_per_file,
+        )
+        for cfg in (electron_cfg, muon_cfg)
+    ]
+    electron_set, muon_set = (loader.dataset for loader in loaders)
+    if isinstance(electron_set, AtlasEventObjectIterableDataset) and isinstance(
+        muon_set, AtlasEventObjectIterableDataset
+    ):
+        aligned = (
+            not electron_set.shuffle and not muon_set.shuffle
+            and electron_set.split_id == muon_set.split_id
+            and len(electron_set.file_specs) == len(muon_set.file_specs)
+        )
+        if aligned:
+            aligned = all(
+                Path(e.path).resolve() == Path(m.path).resolve()
+                and e.n_events == m.n_events
+                and np.array_equal(e.split_ids, m.split_ids)
+                for e, m in zip(electron_set.file_specs, muon_set.file_specs)
+            )
+    elif isinstance(electron_set, Subset) and isinstance(muon_set, Subset):
+        def file_lengths(subset):
+            full = subset.dataset
+            datasets = full.datasets if isinstance(full, ConcatDataset) else [full]
+            if not all(isinstance(dataset, AtlasEventMapDataset) for dataset in datasets):
+                raise ValueError("Unsupported dataset for derived lepton event alignment")
+            return [len(dataset) for dataset in datasets]
+
+        aligned = (
+            file_lengths(electron_set) == file_lengths(muon_set)
+            and np.array_equal(electron_set.indices, muon_set.indices)
+        )
+    else:
+        raise ValueError(
+            "Derived diagnostics require matching ATLAS eager or streaming loaders; "
+            "mixing loader types cannot guarantee paired event order"
+        )
+    if not aligned:
+        raise ValueError("Electron and muon diagnostics have different event splits or ordering")
+    return loaders[0], loaders[1]
 
 
 def feature_indices(feature_names: list[str], required: tuple[str, ...]) -> dict[str, int]:
@@ -1022,16 +1061,17 @@ def collect_lepton_pair_diagnostics(
     *,
     electron_model: LitVqVae,
     muon_model: LitVqVae,
-    electron_data_paths: list[str],
-    electron_dataset_kwargs: dict,
-    muon_dataset_kwargs: dict,
+    electron_loader: DataLoader,
+    muon_loader: DataLoader,
+    electron_inverse_transformer,
+    muon_inverse_transformer,
     electron_feature_names: list[str],
     muon_feature_names: list[str],
-    batch_size: int,
-    num_workers: int,
     device: torch.device,
     max_events: int,
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    if max_events <= 0:
+        raise ValueError("max_events must be positive")
     electron_idx = feature_indices(electron_feature_names, ("pt", "eta", "phi"))
     muon_idx = feature_indices(muon_feature_names, ("pt", "eta", "phi"))
     values = {
@@ -1039,72 +1079,44 @@ def collect_lepton_pair_diagnostics(
         "m_ll": {"original": [], "reconstructed": []},
     }
 
-    for data_path in electron_data_paths:
-        log.info("Analyzing derived leptons in %s", data_path)
-        electron_dataset = AtlasEventMapDataset(data_path, **electron_dataset_kwargs)
-        muon_dataset = AtlasEventMapDataset(data_path, **muon_dataset_kwargs)
-        if len(electron_dataset) != len(muon_dataset):
-            raise ValueError(f"Electron and muon datasets have different lengths in {data_path}")
+    with torch.no_grad():
+        for electron_batch, muon_batch in zip_longest(electron_loader, muon_loader):
+            if electron_batch is None or muon_batch is None:
+                raise ValueError("Electron and muon loaders have different numbers of batches")
+            e_orig, e_reco, e_mask = decode_event_batch(
+                electron_model, electron_batch, device, electron_inverse_transformer
+            )
+            m_orig, m_reco, m_mask = decode_event_batch(
+                muon_model, muon_batch, device, muon_inverse_transformer
+            )
+            n_events = e_orig.shape[0]
+            if n_events != m_orig.shape[0]:
+                raise ValueError("Electron and muon batches have different event counts")
 
-        electron_loader = DataLoader(
-            electron_dataset,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            shuffle=False,
-        )
-        muon_loader = DataLoader(
-            muon_dataset,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            shuffle=False,
-        )
+            for event_idx in range(n_events):
+                leptons = []
+                append_leptons(leptons, e_orig, e_reco, e_mask, event_idx, electron_idx, 0.000511)
+                append_leptons(leptons, m_orig, m_reco, m_mask, event_idx, muon_idx, 0.10566)
+                if len(leptons) < 2:
+                    continue
 
-        with torch.no_grad():
-            for electron_batch, muon_batch in zip(electron_loader, muon_loader):
-                e_orig, e_reco, e_mask = decode_event_batch(electron_model, electron_batch, device)
-                m_orig, m_reco, m_mask = decode_event_batch(muon_model, muon_batch, device)
-                n_events = e_orig.shape[0]
+                lep_a, lep_b = sorted(leptons, key=lambda lep: lep["sort_pt"], reverse=True)[:2]
+                orig_a, orig_b = lep_a["original"], lep_b["original"]
+                reco_a, reco_b = lep_a["reconstructed"], lep_b["reconstructed"]
 
-                for event_idx in range(n_events):
-                    leptons = []
-                    append_leptons(
-                        leptons,
-                        e_orig,
-                        e_reco,
-                        e_mask,
-                        event_idx,
-                        electron_idx,
-                        0.000511,
-                    )
-                    append_leptons(
-                        leptons,
-                        m_orig,
-                        m_reco,
-                        m_mask,
-                        event_idx,
-                        muon_idx,
-                        0.10566,
-                    )
-                    if len(leptons) < 2:
-                        continue
+                values["dR_ll"]["original"].append(delta_r(orig_a, orig_b))
+                values["dR_ll"]["reconstructed"].append(delta_r(reco_a, reco_b))
+                values["m_ll"]["original"].append(invariant_mass(orig_a, orig_b))
+                values["m_ll"]["reconstructed"].append(invariant_mass(reco_a, reco_b))
 
-                    lep_a, lep_b = sorted(leptons, key=lambda lep: lep["sort_pt"], reverse=True)[:2]
-                    orig_a, orig_b = lep_a["original"], lep_b["original"]
-                    reco_a, reco_b = lep_a["reconstructed"], lep_b["reconstructed"]
-
-                    values["dR_ll"]["original"].append(delta_r(orig_a, orig_b))
-                    values["dR_ll"]["reconstructed"].append(delta_r(reco_a, reco_b))
-                    values["m_ll"]["original"].append(invariant_mass(orig_a, orig_b))
-                    values["m_ll"]["reconstructed"].append(invariant_mass(reco_a, reco_b))
-
-                    if len(values["dR_ll"]["original"]) >= max_events:
-                        return {
-                            name: (
-                                np.asarray(items["original"], dtype=np.float32),
-                                np.asarray(items["reconstructed"], dtype=np.float32),
-                            )
-                            for name, items in values.items()
-                        }
+                if len(values["dR_ll"]["original"]) >= max_events:
+                    return {
+                        name: (
+                            np.asarray(items["original"], dtype=np.float32),
+                            np.asarray(items["reconstructed"], dtype=np.float32),
+                        )
+                        for name, items in values.items()
+                    }
 
     return {
         name: (
@@ -1194,12 +1206,18 @@ def run_derived_lepton_diagnostics(
     electron_cfg = OmegaConf.load(electron_run_dir / "full_config.yaml")
     muon_cfg = OmegaConf.load(muon_run_dir / "full_config.yaml")
 
-    electron_data_paths, electron_dataset_kwargs = dataset_kwargs_from_cfg(
-        electron_cfg,
-        args,
-        electron_run_dir,
+    electron_loader, muon_loader = aligned_lepton_dataloaders(
+        electron_cfg=electron_cfg, muon_cfg=muon_cfg,
+        h5_files=list(args.h5_files) if args.h5_files else None,
+        split=args.split, batch_size=args.batch_size, num_workers=args.num_workers,
+        num_events_per_file=args.num_events_per_file,
     )
-    _, muon_dataset_kwargs = dataset_kwargs_from_cfg(muon_cfg, args, muon_run_dir)
+    inverse_transformers = []
+    for cfg in (electron_cfg, muon_cfg):
+        transforms, inverse = transform_list_and_cst_fn_from_cfg(cfg)
+        if transforms and not callable(getattr(inverse, "inverse_transform", None)):
+            raise ValueError("Derived diagnostics require invertible saved object preprocessing")
+        inverse_transformers.append(inverse)
     electron_model = load_analysis_model(electron_run_dir, None, device)
     muon_model = load_analysis_model(muon_run_dir, None, device)
 
@@ -1209,13 +1227,12 @@ def run_derived_lepton_diagnostics(
     derived = collect_lepton_pair_diagnostics(
         electron_model=electron_model,
         muon_model=muon_model,
-        electron_data_paths=electron_data_paths,
-        electron_dataset_kwargs=electron_dataset_kwargs,
-        muon_dataset_kwargs=muon_dataset_kwargs,
+        electron_loader=electron_loader,
+        muon_loader=muon_loader,
+        electron_inverse_transformer=inverse_transformers[0],
+        muon_inverse_transformer=inverse_transformers[1],
         electron_feature_names=electron_feature_names,
         muon_feature_names=muon_feature_names,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
         device=device,
         max_events=args.max_derived_events,
     )

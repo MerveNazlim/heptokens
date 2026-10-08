@@ -198,6 +198,14 @@ but a capped sample is not guaranteed to be globally representative.
 The main evaluation path honors the saved loader; an older eager loader
 can still load complete H5 inputs.
 
+Optional `--derived-electron-run-dir` and `--derived-muon-run-dir` diagnostics
+also use each run's saved preprocessing and inverse-transform valid objects
+before computing leading-lepton mass and angular separation. They require
+`--split val` or `--split test`, the same ordered H5 files, matching loader
+types, and identical event selections. Mismatches raise an error instead of
+pairing unrelated events. This paired path uses zero loader workers to keep
+event order deterministic; ordinary diagnostics still honor `--num-workers`.
+
 ### Train one shared tokenizer across object types
 
 Use a shared tokenizer only for collections configured with exactly the same feature names and feature order. For example, all object types can share a kinematics-only tokenizer with:
