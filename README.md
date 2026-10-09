@@ -486,3 +486,17 @@ For every final comparison, record:
 | configs/model/foundation_grouped_pretrain.yaml | Masked grouped-token pretraining model |
 | configs/model/foundation_grouped_cls_classifier.yaml | Grouped [CLS] classification model |
 
+## Hpcc
+
+When installing, do:
+```
+curl -fsSL https://pixi.sh/install.sh | bash
+echo "alias pixenv='module purge; unset PYTHONPATH'" >> ~/.bashrc
+pixenv
+pixi update cuda-version
+```
+
+Next time login:
+```
+pixenv
+```

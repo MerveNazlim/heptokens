@@ -12,7 +12,9 @@ import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-from heptokens.data.event_mappable import EventMapDataset
+from heptokens.data.atlas_event_mappable import AtlasEventMapDataset as EventMapDataset
+
+#from heptokens.data.event_mappable import EventMapDataset
 from heptokens.models.vq_vae import LitVqVae
 
 matplotlib.use("Agg")

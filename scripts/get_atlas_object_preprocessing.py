@@ -26,7 +26,12 @@ def parse_args() -> argparse.Namespace:
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--h5-files", nargs="+", required=True, help="Input ATLAS event H5 files.")
+    parser.add_argument("--h5-files", nargs="+", required=False, help="Input ATLAS event H5 files.")
+    parser.add_argument("--h5-folder", 
+        type=Path,
+        help="Folder containing ATLAS event H5 files.",
+    )
+
     parser.add_argument(
         "--datamodule-config",
         type=Path,
@@ -48,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-objects",
         type=int,
-        default=1_000_000,
+        default=100000000,
         help="Maximum valid objects used to fit the transformer.",
     )
     parser.add_argument(
@@ -174,8 +179,16 @@ def main() -> None:
     log.info("Log features: %s", [feature_names[idx] for idx in log_indices])
 
     rng = np.random.default_rng(args.seed)
+
+
+    if args.h5_folder is not None:
+        h5_files = sorted(args.h5_folder.glob("*.h5"))
+
+    else:
+        h5_files = args.h5_files
+
     objects = read_valid_objects(
-        h5_files=list(args.h5_files),
+        h5_files=list(h5_files),
         input_paths=input_paths,
         mask_path=mask_path,
         max_objects=args.max_objects,
@@ -208,7 +221,7 @@ def main() -> None:
         "log_feature_indices": log_indices,
         "log_offset": args.log_offset,
         "n_objects_fit": int(len(objects)),
-        "h5_files": list(args.h5_files),
+        "h5_files": [str(path) for path in h5_files],
     }
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     log.info("Saved transformer to %s", transformer_path)
