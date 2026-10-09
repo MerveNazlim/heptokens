@@ -1,0 +1,10 @@
+defaults:
+  - token_parquet_pretrain
+  - _self_
+
+_target_: heptokens.data.benchmark_token_parquet.TokenParquetPretrainModule
+require_continuous: true
+continuous_feature_column: continuous_features
+# The paired files retain Q8 tokens for matched comparisons, but this model
+# consumes only the aligned continuous representation.
+include_tokens: false

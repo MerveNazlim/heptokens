@@ -91,6 +91,10 @@ class ShardWriter:
 
     def _write(self, table: pa.Table) -> None:
         order = self.rng.permutation(table.num_rows)
+        # Rebase nested slices before Arrow take; copy only this bounded shard.
+        table = pa.Table.from_arrays(
+            [column.combine_chunks() for column in table.columns], schema=table.schema
+        )
         table = table.take(pa.array(order, type=pa.int64()))
         path = self.output_dir / f"part-{self.shard_index:05d}.parquet"
         pq.write_table(

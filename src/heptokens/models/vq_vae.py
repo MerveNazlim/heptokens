@@ -236,11 +236,15 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
 
         for attr in row_attrs:
             tensor = getattr(codebook, attr, None)
-            if torch.is_tensor(tensor) and tensor.shape[-2:] == (
-                int(self.hparams.codebook_size),
-                int(self.hparams.codebook_dim),
-            ):
+            if not torch.is_tensor(tensor) or tensor.ndim not in (2, 3):
+                continue
+            shape = (int(self.hparams.codebook_size), int(self.hparams.codebook_dim))
+            if tensor.shape[-2:] == shape:
                 self._assign_codebook_rows(tensor, dead_indices, replacements)
+                touched += 1
+            elif tensor.shape[-2:] == shape[::-1]:
+                # Older quantizers store both embeddings and EMA sums as [D, K].
+                self._assign_codebook_rows(tensor.transpose(-1, -2), dead_indices, replacements)
                 touched += 1
 
         embedding = getattr(codebook, "embedding", None)
@@ -284,6 +288,13 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
             counts = torch.bincount(values, minlength=codebook_size).to(self._dead_code_usage)
             self._dead_code_usage[quantizer_idx] += counts
 
+    @staticmethod
+    def _initialization_permutation(n: int, device: torch.device) -> torch.Tensor:
+        # Initialization must not advance the RNG used by training/shuffling.
+        devices = [device.index] if device.type == "cuda" else []
+        with torch.random.fork_rng(devices=devices):
+            return torch.randperm(n, device=device)
+
     def _collect_data_codebook_init_samples(
         self,
         z_e: torch.Tensor,
@@ -304,7 +315,7 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         if remaining <= 0:
             return
         if len(valid_z) > remaining:
-            selected = torch.randperm(len(valid_z), device=valid_z.device)[:remaining]
+            selected = self._initialization_permutation(len(valid_z), valid_z.device)[:remaining]
             valid_z = valid_z[selected]
 
         self._data_codebook_init_samples.append(valid_z)
@@ -328,7 +339,7 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
 
         samples = torch.cat(self._data_codebook_init_samples, dim=0)
         codebook_size = int(self.hparams.codebook_size)
-        selected = torch.randperm(len(samples), device=samples.device)[:codebook_size]
+        selected = self._initialization_permutation(len(samples), samples.device)[:codebook_size]
         replacements = samples[selected]
         code_indices = torch.arange(codebook_size, device=samples.device)
         initialized = 0

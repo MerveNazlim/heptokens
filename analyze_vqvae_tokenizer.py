@@ -1,4 +1,4 @@
-"""Make post-training diagnostics for an event/object VQ-VAE tokenizer."""
+"""Compatibility entrypoint for the canonical saved-run tokenizer evaluator."""
 
 from __future__ import annotations
 
