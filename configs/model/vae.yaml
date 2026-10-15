@@ -1,0 +1,38 @@
+---
+# configs/model/vae.yaml
+_target_: heptokens.models.vae.LitStandardVae
+encoder:
+  _target_: heptokens.models.coders.Encoder
+  _partial_: true
+  model:
+    _target_: heptokens.models.coders.CoderModel
+    _partial_: true
+    hidden_dims: [128, 256, 512]
+decoder:
+  _target_: heptokens.models.coders.Decoder
+  _partial_: true
+  model:
+    _target_: heptokens.models.coders.CoderModel
+    _partial_: true
+    hidden_dims: [128, 256, 512]
+latent_dim: 16
+
+# KL weight relative to the unit-variance Gaussian ELBO: the applied weight is
+# beta * 2 / n_features, so beta = 1 is the standard sigma = 1 ELBO.
+# Lower values favour reconstruction (equivalent to sigma^2 = beta).
+beta: 1.0
+# Applied KL weight without the 2 / n_features rescaling; overrides beta when set.
+kl_scale:
+# Linearly ramp the KL weight from 0 to its full value over this many optimizer steps (0 = off).
+kl_warmup_steps: 0
+
+learning_rate: 1e-3
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 1.0e-3
+scheduler:
+  _target_: heptokens.models.utils.warmup_cosine_scheduler
+  _partial_: true
+  warmup_epochs: 5
+  min_lr: 1.0e-6

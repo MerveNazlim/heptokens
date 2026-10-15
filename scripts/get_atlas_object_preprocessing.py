@@ -26,10 +26,12 @@ def parse_args() -> argparse.Namespace:
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--h5-files", nargs="+", required=False, help="Input ATLAS event H5 files.")
-    parser.add_argument("--h5-folder", 
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--h5-files", nargs="+", help="Input ATLAS event H5 files.")
+    inputs.add_argument(
+        "--h5-folder",
         type=Path,
-        help="Folder containing ATLAS event H5 files.",
+        help="Folder containing ATLAS event H5 files (all *.h5 in it and its subfolders, sorted by path).",
     )
 
     parser.add_argument(
@@ -217,12 +219,12 @@ def main() -> None:
 
     rng = np.random.default_rng(args.seed)
 
-
     if args.h5_folder is not None:
-        h5_files = sorted(args.h5_folder.glob("*.h5"))
-
+        h5_files = [str(path) for path in sorted(args.h5_folder.rglob("*.h5"))]
+        if not h5_files:
+            raise ValueError(f"No .h5 files found in {args.h5_folder}")
     else:
-        h5_files = args.h5_files
+        h5_files = list(args.h5_files)
 
     event_selections = None
     event_cap = args.num_events_per_file
@@ -233,10 +235,10 @@ def main() -> None:
                 event_cap, int(configured_cap)
             )
         event_selections = training_event_masks(
-            list(args.h5_files), input_paths[0], cfg, event_cap, args.seed
+            h5_files, input_paths[0], cfg, event_cap, args.seed
         )
     objects = read_valid_objects(
-        h5_files=list(h5_files),
+        h5_files=h5_files,
         input_paths=input_paths,
         mask_path=mask_path,
         max_objects=args.max_objects,
@@ -270,7 +272,7 @@ def main() -> None:
         "log_feature_indices": log_indices,
         "log_offset": args.log_offset,
         "n_objects_fit": int(len(objects)),
-        "h5_files": list(args.h5_files),
+        "h5_files": h5_files,
         "fit_split": args.fit_split,
         "seed": args.seed,
         "num_events_per_file": event_cap,
