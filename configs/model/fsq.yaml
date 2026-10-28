@@ -1,0 +1,31 @@
+# configs/model/fsq.yaml
+_target_: heptokens.models.fsq.LitFSQ
+encoder:
+  _target_: heptokens.models.coders.Encoder
+  _partial_: true
+  model:
+    _target_: heptokens.models.coders.CoderModel
+    _partial_: true
+    hidden_dims: [128, 256, 512]
+decoder:
+  _target_: heptokens.models.coders.Decoder
+  _partial_: true
+  model:
+    _target_: heptokens.models.coders.CoderModel
+    _partial_: true
+    hidden_dims: [128, 256, 512]
+
+# Quantization levels per latent dimension; latent dim = len(levels),
+# codebook size = prod(levels) (here 8*5*5*5 = 1000).
+levels: [8, 5, 5, 5]
+
+learning_rate: 1e-3
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 1.0e-3
+scheduler:
+  _target_: heptokens.models.utils.warmup_cosine_scheduler
+  _partial_: true
+  warmup_epochs: 5
+  min_lr: 1.0e-6

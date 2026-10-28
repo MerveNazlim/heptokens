@@ -1,0 +1,37 @@
+# configs/model/rfsq.yaml
+_target_: heptokens.models.rfsq.LitResidualFSQ
+encoder:
+  _target_: heptokens.models.coders.Encoder
+  _partial_: true
+  model:
+    _target_: heptokens.models.coders.CoderModel
+    _partial_: true
+    hidden_dims: [128, 256, 512]
+decoder:
+  _target_: heptokens.models.coders.Decoder
+  _partial_: true
+  model:
+    _target_: heptokens.models.coders.CoderModel
+    _partial_: true
+    hidden_dims: [128, 256, 512]
+
+# Residual FSQ: num_quantizers stages share the same levels; each token is
+# num_quantizers indices. Latent dim = len(levels),
+# codebook size per stage = prod(levels) (here 8*5*5*5 = 1000).
+levels: [8, 5, 5, 5]
+num_quantizers: 2
+# Per-dim latent normalization before the soft clamp (prevents saturated / dead dims).
+# target_std: std of each latent dim after normalization.
+dim_normalization: false
+target_std: 0.5
+
+learning_rate: 1e-3
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 1.0e-3
+scheduler:
+  _target_: heptokens.models.utils.warmup_cosine_scheduler
+  _partial_: true
+  warmup_epochs: 5
+  min_lr: 1.0e-6
