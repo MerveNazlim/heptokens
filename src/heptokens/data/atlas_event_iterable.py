@@ -145,6 +145,7 @@ class AtlasEventObjectIterableDataset(IterableDataset):
         self.num_events = int(
             sum(np.count_nonzero(spec.split_ids == self.split_id) for spec in self.file_specs)
         )
+        self.length_reserve = 0
 
         if self.chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
@@ -159,7 +160,7 @@ class AtlasEventObjectIterableDataset(IterableDataset):
             log.warning("AtlasEventObjectIterableDataset created with no files")
 
     def __len__(self) -> int:
-        return self.num_events
+        return max(self.num_events - self.length_reserve, 0)
 
     def _iteration_rng(self) -> np.random.Generator:
         worker_info = torch.utils.data.get_worker_info()
@@ -616,6 +617,12 @@ class AtlasEventObjectIterableModule(BaseMapModule):
 
         if sampler is not None:
             log.warning("Ignoring sampler for iterable event-object dataloader")
+
+        if drop_last and self.num_workers > 1:
+            dataset.length_reserve = (self.num_workers - 1) * self.batch_size
+        else:
+            dataset.length_reserve = 0
+            
         return DataLoader(
             dataset,
             batch_size=self.batch_size,
