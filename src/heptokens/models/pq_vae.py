@@ -32,7 +32,7 @@ class ProductQuantizer(nn.Module):
         *,
         dim: int,
         num_quantizers: int,
-        codebook_size: int,
+        codebook_size: int | list[int],
         commitment: float = 1.0,
     ):
         super().__init__()
@@ -41,15 +41,27 @@ class ProductQuantizer(nn.Module):
                 f"codebook_dim ({dim}) must be divisible by num_quantizers ({num_quantizers}). "
                 f"Valid choices: {[m for m in range(1, dim + 1) if dim % m == 0]}"
             )
+
+        if isinstance(codebook_size, int):
+            codebook_sizes = [codebook_size] * num_quantizers
+        else:
+            codebook_sizes = list(codebook_size)
+            if len(codebook_sizes) != num_quantizers:
+                raise ValueError(
+                    f"codebook_size list length ({len(codebook_sizes)}) must equal "
+                    f"num_quantizers ({num_quantizers})"
+                )
+
         self.dim = dim
         self.sub_dim = dim // num_quantizers
+        self.codebook_sizes = codebook_sizes
         self.layers = nn.ModuleList([
             VectorQuantize(
                 dim=self.sub_dim,
-                codebook_size=codebook_size,
+                codebook_size=cs,
                 commitment=commitment,
             )
-            for _ in range(num_quantizers)
+            for cs in codebook_sizes
         ])
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -75,7 +87,8 @@ class LitPqVae(LitVqVae):
     Args:
         encoder: Encoder class to instantiate
         decoder: Decoder class to instantiate
-        codebook_size: Number of codes in each sub-space codebook
+        codebook_size: Number of codes per sub-space codebook; either a single int
+                       (all sub-spaces share the same size) or a list of M ints for independent sizes per sub-space
         codebook_dim: Total embedding dimension; must be divisible by num_quantizers
         num_quantizers: Number of sub-spaces M to split codebook_dim into
         commitment_weight: Weight for commitment loss
@@ -101,7 +114,7 @@ class LitPqVae(LitVqVae):
         self.vector_quantization = ProductQuantizer(
             dim=int(self.hparams.codebook_dim),
             num_quantizers=int(self.hparams.num_quantizers),
-            codebook_size=int(self.hparams.codebook_size),
+            codebook_size=self.hparams.codebook_size,
             commitment=float(self.hparams.commitment_weight),
         )
 
@@ -133,16 +146,17 @@ class LitPqVae(LitVqVae):
         Calling super() would fail because it checks (codebook_size, codebook_dim)
         but each sub-codebook is (codebook_size, sub_dim)
         """
-        sub_dime = self.vector_quantization.sub_dim
+        sub_dim = self.vector_quantization.sub_dim
+
+        idx = next(
+            i for i, l in enumerate(self.vector_quantization.layers) if l is layer
+        )
 
         if replacements.shape[-1] == int(self.hparams.codebook_dim):
-            idx = next(
-                i for i, l in enumerate(self.vector_quantization.layers) if l is layer
-            )
             replacements = replacements[..., idx * sub_dim : (idx + 1) * sub_dim]
 
-        # Shape to match against — sub_dim, not codebook_dim
-        shape = (int(self.hparams.codebook_size), sub_dim)
+        layer_codebook_size = self.vector_quantization.codebook_sizes[idx]
+        shape = (layer_codebook_size, sub_dim)
 
         codebook = getattr(layer, "_codebook", layer)
         row_attrs = ("embed", "codebook", "weight", "embed_avg", "ema_embed", "ema_embedding")
@@ -167,7 +181,7 @@ class LitPqVae(LitVqVae):
 
         for attr in cluster_attrs:
             tensor = getattr(codebook, attr, None)
-            if torch.is_tensor(tensor) and tensor.shape[-1] == int(self.hparams.codebook_size):
+            if torch.is_tensor(tensor) and tensor.shape[-1] == layer_codebook_size:
                 self._assign_cluster_rows(tensor, dead_indices)
 
         return touched
