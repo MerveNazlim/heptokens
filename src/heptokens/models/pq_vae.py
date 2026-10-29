@@ -45,7 +45,7 @@ class ProductQuantizer(nn.Module):
         if isinstance(codebook_size, int):
             codebook_sizes = [codebook_size] * num_quantizers
         else:
-            codebook_sizes = list(codebook_size)
+            codebook_sizes = [int(cs) for cs in codebook_size]
             if len(codebook_sizes) != num_quantizers:
                 raise ValueError(
                     f"codebook_size list length ({len(codebook_sizes)}) must equal "
@@ -108,13 +108,21 @@ class LitPqVae(LitVqVae):
     """
 
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+        _pq_codebook_size = kwargs.pop("codebook_size")
+        if isinstance(_pq_codebook_size, int):
+            _codebook_sizes = _pq_codebook_size
+            _parent_size = _pq_codebook_size
+        else:
+            _codebook_sizes = [int(cs) for cs in _pq_codebook_size]  # strips ListConfig
+            _parent_size = _codebook_sizes[0]  # parent's VQ is replaced below
+
+        super().__init__(codebook_size=_parent_size, **kwargs)
 
         # Replace the parent's ResidualVQ with a product quantizer.
         self.vector_quantization = ProductQuantizer(
             dim=int(self.hparams.codebook_dim),
             num_quantizers=int(self.hparams.num_quantizers),
-            codebook_size=self.hparams.codebook_size,
+            codebook_size=_codebook_sizes,
             commitment=float(self.hparams.commitment_weight),
         )
 
