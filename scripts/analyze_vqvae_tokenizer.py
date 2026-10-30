@@ -1,4 +1,4 @@
-"""Make post-training diagnostics for an event/object VQ-VAE tokenizer."""
+"""Make post-training diagnostics for an event/object VQ-VAE or PQ-VAE tokenizer."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
 log = logging.getLogger(__name__)
-
 
 DEFAULT_OBJECT_FEATURES = {
     "jets": [
@@ -99,6 +98,14 @@ FEATURE_LABELS = {
     "charge": "charge",
 }
 
+# Human-readable labels shown in codebook plots per model type.
+# For RVQ each dimension is a residual "quantizer"; for PQ it is a "subspace".
+_QUANTIZER_LABELS = {
+    "vqvae": "quantizer",
+    "pqvae": "subspace",
+}
+
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -119,6 +126,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         help="Directory for plots. Defaults to <run-dir>/figures/tokenizer_analysis.",
+    )
+    parser.add_argument(
+        "--model-type",
+        choices=["vqvae", "pqvae"],
+        default="vqvae",
+        help=(
+            "Model architecture stored in the checkpoint. "
+            "'vqvae' loads LitVqVae (RVQ, default); "
+            "'pqvae' loads LitPqVae (Product Quantization)."
+        ),
     )
     parser.add_argument(
         "--num-events-per-file",
@@ -179,6 +196,34 @@ def parse_args() -> argparse.Namespace:
             parser.error("--max-derived-events must be positive")
     return args
 
+
+def model_cls_from_type(model_type: str) -> type:
+    """Return the Lightning model class for the given model-type string."""
+    if model_type == "pqvae":
+        from heptokens.models.pq_vae import LitPqVae  # imported lazily so vqvae needs no pq dep
+        return LitPqVae
+    if model_type == "vqvae":
+        return LitVqVae
+    raise ValueError(f"Unknown model type: {model_type!r}. Choose 'vqvae' or 'pqvae'.")
+
+def codebook_size_from_model(model, cfg) -> int:
+    """Extract the per-subspace/per-quantizer codebook size from model hparams or config.
+
+    Tries common attribute names used by both LitVqVae and LitPqVae so the caller
+    does not need to know which architecture is loaded.
+    """
+    for attr in ("codebook_size", "n_codes", "subcodebook_size", "codebook_size_per_subspace"):
+        val = getattr(model.hparams, attr, None)
+        if val is not None:
+            return int(val)
+    for key in ("model.codebook_size", "model.n_codes", "model.subcodebook_size"):
+        val = OmegaConf.select(cfg, key)
+        if val is not None:
+            return int(val)
+    raise ValueError(
+        "Cannot determine codebook size from model hparams or config. "
+        "Expected one of: codebook_size, n_codes, subcodebook_size."
+    )
 
 def choose_device(device: str) -> torch.device:
     if device == "auto":
@@ -715,7 +760,12 @@ def codebook_counts(indices: np.ndarray, codebook_size: int) -> np.ndarray:
     return counts
 
 
-def plot_codebook_usage(counts: np.ndarray, output_path: Path) -> None:
+def plot_codebook_usage(
+    counts: np.ndarray,
+    output_path: Path,
+    *,
+    quantizer_label: str = "quantizer"
+) -> None:
     n_quantizers = counts.shape[0]
     fig, axes = plt.subplots(n_quantizers, 1, figsize=(10, 2.6 * n_quantizers), sharex=True)
     axes = np.atleast_1d(axes)
@@ -724,7 +774,7 @@ def plot_codebook_usage(counts: np.ndarray, output_path: Path) -> None:
         used = int(np.count_nonzero(counts[quantizer_idx]))
         dead = int(counts.shape[1] - used)
         ax.set_ylabel(f"q{quantizer_idx}")
-        ax.set_title(f"quantizer {quantizer_idx}: used={used}, dead={dead}")
+        ax.set_title(f"{quantizer_label} {quantizer_idx}: used={used}, dead={dead}")
         ax.grid(axis="y", alpha=0.2)
     axes[-1].set_xlabel("code index")
     fig.suptitle("Codebook usage frequency", fontsize=14)
@@ -756,7 +806,12 @@ def plot_codebook_frequency_hist(
     plt.close(fig)
 
 
-def plot_dead_tokens(counts: np.ndarray, output_path: Path) -> None:
+def plot_dead_tokens(
+    counts: np.ndarray,
+    output_path: Path,
+    *,
+    quantizer_label: str = "quantizer"
+) -> None:
     used = np.count_nonzero(counts, axis=1)
     dead = counts.shape[1] - used
     labels = [f"q{idx}" for idx in range(counts.shape[0])]
@@ -765,7 +820,7 @@ def plot_dead_tokens(counts: np.ndarray, output_path: Path) -> None:
     ax.bar(labels, used, label="used", color="#315C9E")
     ax.bar(labels, dead, bottom=used, label="dead", color="#B84A4A")
     ax.set_ylabel("codes")
-    ax.set_title("Used vs dead codes")
+    ax.set_title(f"Used vs dead codes per {quantizer_label}")
     ax.legend(frameon=False)
     ax.grid(axis="y", alpha=0.2)
     fig.tight_layout()
@@ -908,10 +963,15 @@ def invariant_mass(lep_a: dict, lep_b: dict) -> float:
     return float(np.sqrt(max(m2, 0.0)))
 
 
-def load_analysis_model(run_dir: Path, checkpoint: str | None, device: torch.device) -> LitVqVae:
+def load_analysis_model(
+    run_dir: Path,
+    checkpoint: str | None,
+    device: torch.device,
+    model_cls: type = LitVqVae
+) -> LitVqVae:
     ckpt = find_checkpoint(run_dir, checkpoint)
-    log.info("Loading %s", ckpt)
-    model = LitVqVae.load_from_checkpoint(ckpt, map_location=device)
+    log.info("Loading %s with %s", ckpt, model_cls.__name__)
+    model = model_cls.load_from_checkpoint(ckpt, map_location=device)
     model.to(device)
     model.eval()
     return model
@@ -1218,8 +1278,10 @@ def run_derived_lepton_diagnostics(
         if transforms and not callable(getattr(inverse, "inverse_transform", None)):
             raise ValueError("Derived diagnostics require invertible saved object preprocessing")
         inverse_transformers.append(inverse)
-    electron_model = load_analysis_model(electron_run_dir, None, device)
-    muon_model = load_analysis_model(muon_run_dir, None, device)
+
+    model_cls = model_cls_from_type(args.model_type)
+    electron_model = load_analysis_model(electron_run_dir, None, device, model_cls=model_cls)
+    muon_model = load_analysis_model(muon_run_dir, None, device, model_cls=model_cls)
 
     electron_feature_names = feature_names_from_cfg(electron_cfg, feature_count_from_cfg(electron_cfg))
     muon_feature_names = feature_names_from_cfg(muon_cfg, feature_count_from_cfg(muon_cfg))
@@ -1278,10 +1340,10 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     device = choose_device(args.device)
-    log.info("Loading %s", checkpoint)
-    model = LitVqVae.load_from_checkpoint(checkpoint, map_location=device)
-    model.to(device)
-    model.eval()
+    model_cls = model_cls_from_type(args.model_type)
+    quantizer_label = _QUANTIZER_LABELS[args.model_type]
+
+    model = load_analysis_model(run_dir, args.checkpoint, device, model_cls=model_cls) 
 
     log.info("Collecting diagnostics through the canonical saved datamodule path")
     original, reconstruction, indices, n_seen = collect_diagnostics_for_h5_files(
