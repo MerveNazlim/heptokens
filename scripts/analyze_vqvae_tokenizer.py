@@ -64,6 +64,7 @@ DEFAULT_OBJECT_FEATURES = {
         "RNNEleScore",
     ],
     "photons": ["pt", "eta", "phi", "trk_iso03", "isLoose", "isTight"],
+    "tracks": ["pt", "eta", "phi", "d0", "z0", "qOverP", "chiSquared", "nDoF"],
 }
 
 FEATURE_LABELS = {
@@ -186,6 +187,11 @@ def parse_args() -> argparse.Namespace:
         default=200_000,
         help="Maximum number of events with at least two leptons for derived lepton plots.",
     )
+    parser.add_argument(
+        "--encoder-dim-analysis",
+        action="store_true",
+        help="Plot encoder output distributions per latent dimension.",
+    )
     args = parser.parse_args()
     if bool(args.derived_electron_run_dir) != bool(args.derived_muon_run_dir):
         parser.error("Derived diagnostics require both electron and muon run directories")
@@ -206,8 +212,8 @@ def model_cls_from_type(model_type: str) -> type:
         return LitVqVae
     raise ValueError(f"Unknown model type: {model_type!r}. Choose 'vqvae' or 'pqvae'.")
 
-def codebook_size_from_model(model, cfg) -> int:
-    """Extract the per-subspace/per-quantizer codebook size from model hparams or config.
+def codebook_size_from_model(model, cfg) -> int | list[int]:
+    """Extract the per-subspace/per-quantizer codebook size from model hparams.
 
     Tries common attribute names used by both LitVqVae and LitPqVae so the caller
     does not need to know which architecture is loaded.
@@ -215,11 +221,11 @@ def codebook_size_from_model(model, cfg) -> int:
     for attr in ("codebook_size", "n_codes", "subcodebook_size", "codebook_size_per_subspace"):
         val = getattr(model.hparams, attr, None)
         if val is not None:
-            return int(val)
+            return int(val) if isinstance(val, (int, float)) else [int(s) for s in val]
     for key in ("model.codebook_size", "model.n_codes", "model.subcodebook_size"):
         val = OmegaConf.select(cfg, key)
         if val is not None:
-            return int(val)
+            return int(val) if isinstance(val, (int, float)) else [int(s) for s in val]
     raise ValueError(
         "Cannot determine codebook size from model hparams or config. "
         "Expected one of: codebook_size, n_codes, subcodebook_size."
@@ -451,6 +457,104 @@ def collect_diagnostics_from_loader(
         n_seen,
     )
 
+def collect_encoder_outputs_from_loader(
+    *,
+    cfg,
+    model: LitVqVae,
+    h5_files: list[str] | None,
+    split: str,
+    batch_size: int,
+    num_workers: int,
+    num_events_per_file: int | None,
+    device: torch.device,
+    max_valid_objects: int,
+) -> np.ndarray:
+    """Collect raw encoder outputs (pre-quantization) for latent dimension analysis."""
+    loader = canonical_dataloader_for_h5_files(
+        cfg=cfg,
+        h5_files=h5_files,
+        split=split,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        num_events_per_file=num_events_per_file,
+    )
+
+    all_z = []
+    n_seen = 0
+
+    with torch.no_grad():
+        for batch in loader:
+            batch = to_device(batch, device)
+            _, _, _, z_e = model.encode_with_encoder_output(batch)
+
+            mask = batch["mask"].bool()
+            z_valid = z_e[mask].detach().cpu().float().numpy()
+            if len(z_valid) == 0:
+                continue
+
+            all_z.append(z_valid)
+            n_seen += len(z_valid)
+            if n_seen >= max_valid_objects:
+                break
+
+    if not all_z:
+        raise RuntimeError("No valid encoder outputs collected. Check mask and input paths.")
+
+    return np.concatenate(all_z, axis=0)[:max_valid_objects]
+
+def plot_encoder_dimension_histograms(
+    z: np.ndarray,
+    output_path: Path,
+    *,
+    bins: int = 60,
+    n_cols: int = 4,
+) -> dict:
+    """Plot per-dimension histograms of encoder outputs (pre-quantization).
+
+    Returns a summary dict with per-dimension variance, mean, and std.
+    """
+    n_dims = z.shape[1]
+    n_rows = int(np.ceil(n_dims / n_cols))
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(n_cols * 4.0, n_rows * 3.5),
+    )
+    axes = np.atleast_1d(axes).reshape(n_rows, n_cols)
+
+    summary = {}
+    for dim in range(n_dims):
+        row, col = dim // n_cols, dim % n_cols
+        ax = axes[row, col]
+        values = z[:, dim]
+        dim_bins = histogram_bins(values, n_bins=bins)
+
+        ax.hist(values, bins=dim_bins, color="#315C9E", alpha=0.85, linewidth=0)
+        var = float(np.var(values))
+        mean = float(np.mean(values))
+        std = float(np.std(values))
+        ax.set_title(
+            f"dim {dim}\nμ={mean:.3f}  σ={std:.3f}\nvar={var:.4f}",
+            fontsize=9,
+        )
+        ax.set_xlabel("encoder output", fontsize=8)
+        ax.set_ylabel("objects", fontsize=8)
+        apply_hep_style(ax)
+        summary[f"dim_{dim}"] = {"mean": mean, "std": std, "variance": var}
+
+    # hide unused subplots
+    for dim in range(n_dims, n_rows * n_cols):
+        axes[dim // n_cols, dim % n_cols].set_visible(False)
+
+    fig.suptitle(
+        f"Encoder output distributions per latent dimension  (N={len(z):,})",
+        fontsize=13,
+    )
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    log.info("Saved encoder dimension histograms to %s", output_path)
+    return summary
 
 def canonical_dataloader_for_h5_files(
     *,
@@ -749,32 +853,35 @@ def plot_feature_overlay(
         fig.savefig(output_dir / f"{safe_filename(feature_name)}_overlay.png", dpi=180)
         plt.close(fig)
 
-
-def codebook_counts(indices: np.ndarray, codebook_size: int) -> np.ndarray:
+def codebook_counts(indices: np.ndarray, codebook_size: int | list[int]) -> np.ndarray | list[np.ndarray]:
     n_quantizers = indices.shape[1]
-    counts = np.zeros((n_quantizers, codebook_size), dtype=np.int64)
+    sizes = [codebook_size] * n_quantizers if isinstance(codebook_size, int) else list(codebook_size)
+    counts = []
     for quantizer_idx in range(n_quantizers):
         values = indices[:, quantizer_idx]
         values = values[values >= 0]
-        counts[quantizer_idx] = np.bincount(values, minlength=codebook_size)[:codebook_size]
-    return counts
+        counts.append(np.bincount(values, minlength=sizes[quantizer_idx])[:sizes[quantizer_idx]])
 
+    uniform = len(set(sizes)) == 1
+    return np.stack(counts) if uniform else counts
 
 def plot_codebook_usage(
-    counts: np.ndarray,
+    counts: np.ndarray | list[np.ndarray],
     output_path: Path,
     *,
     quantizer_label: str = "quantizer"
 ) -> None:
-    n_quantizers = counts.shape[0]
-    fig, axes = plt.subplots(n_quantizers, 1, figsize=(10, 2.6 * n_quantizers), sharex=True)
+    n_quantizers = len(counts)
+    fig, axes = plt.subplots(n_quantizers, 1, figsize=(10, 2.6 * n_quantizers), sharex=False)  # sharex=False for varying sizes
     axes = np.atleast_1d(axes)
     for quantizer_idx, ax in enumerate(axes):
-        ax.bar(np.arange(counts.shape[1]), counts[quantizer_idx], width=1.0)
-        used = int(np.count_nonzero(counts[quantizer_idx]))
-        dead = int(counts.shape[1] - used)
+        c = counts[quantizer_idx]
+        ax.bar(np.arange(len(c)), c, width=1.0)
+        used = int(np.count_nonzero(c))
+        dead = int(len(c) - used)
         ax.set_ylabel(f"q{quantizer_idx}")
         ax.set_title(f"{quantizer_label} {quantizer_idx}: used={used}, dead={dead}")
+        ax.set_xlim(0, len(c))
         ax.grid(axis="y", alpha=0.2)
     axes[-1].set_xlabel("code index")
     fig.suptitle("Codebook usage frequency", fontsize=14)
@@ -784,11 +891,11 @@ def plot_codebook_usage(
 
 
 def plot_codebook_frequency_hist(
-    counts: np.ndarray,
+    counts: np.ndarray | list[np.ndarray],
     object_name: str,
     output_path: Path,
 ) -> None:
-    flat_counts = counts.reshape(-1)
+    flat_counts = np.concatenate(counts) if isinstance(counts, list) else counts.reshape(-1)
     used_fraction = np.count_nonzero(flat_counts) / len(flat_counts)
     hi = np.percentile(flat_counts, 99.5)
     if hi <= 0:
@@ -807,14 +914,14 @@ def plot_codebook_frequency_hist(
 
 
 def plot_dead_tokens(
-    counts: np.ndarray,
+    counts: np.ndarray | list[np.ndarray],
     output_path: Path,
     *,
     quantizer_label: str = "quantizer"
 ) -> None:
-    used = np.count_nonzero(counts, axis=1)
-    dead = counts.shape[1] - used
-    labels = [f"q{idx}" for idx in range(counts.shape[0])]
+    used = np.array([int(np.count_nonzero(c)) for c in counts])
+    dead = np.array([int(len(c) - np.count_nonzero(c)) for c in counts])
+    labels = [f"q{idx}" for idx in range(len(counts))]
 
     fig, ax = plt.subplots(figsize=(7, 4.5))
     ax.bar(labels, used, label="used", color="#315C9E")
@@ -826,7 +933,6 @@ def plot_dead_tokens(
     fig.tight_layout()
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
-
 
 def reconstruction_metrics(
     original: np.ndarray,
@@ -970,6 +1076,18 @@ def load_analysis_model(
     model_cls: type = LitVqVae
 ) -> LitVqVae:
     ckpt = find_checkpoint(run_dir, checkpoint)
+
+    raw = torch.load(ckpt, weights_only=False, map_location="cpu")
+    state_dict = raw["state_dict"]
+    sizes = []
+    i = 0
+    while f"vector_quantization.layers.{i}.embed" in state_dict:
+        sizes.append(state_dict[f"vector_quantization.layers.{i}.embed"].shape[1])
+        i += 1
+    if sizes:
+        raw["hyper_parameters"]["codebook_size"] = sizes[0] if len(set(sizes)) == 1 else sizes
+        torch.save(raw, ckpt)
+
     log.info("Loading %s with %s", ckpt, model_cls.__name__)
     model = model_cls.load_from_checkpoint(ckpt, map_location=device)
     model.to(device)
@@ -1186,7 +1304,6 @@ def collect_lepton_pair_diagnostics(
         for name, items in values.items()
     }
 
-
 def plot_derived_triptych(
     original: np.ndarray,
     reconstruction: np.ndarray,
@@ -1320,6 +1437,7 @@ def run_derived_lepton_diagnostics(
     log.info("Wrote derived lepton diagnostics to %s", derived_dir)
 
 
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     args = parse_args()
@@ -1361,12 +1479,15 @@ def main() -> None:
 
     feature_names = feature_names_from_cfg(cfg, original.shape[1])
     object_name = object_name_from_cfg(cfg)
-    codebook_size = int(getattr(model.hparams, "codebook_size", cfg.model.codebook_size))
+    codebook_size = codebook_size_from_model(model, cfg)
     counts = codebook_counts(indices, codebook_size)
     reco_metrics = reconstruction_metrics(original, reconstruction, feature_names)
     usage_summary = codebook_summary(counts)
 
-    np.save(output_dir / "codebook_counts.npy", counts)
+    if isinstance(counts, list):
+        np.savez(output_dir / "codebook_counts.npz", **{f"q{i}": c for i, c in enumerate(counts)})
+    else:
+        np.save(output_dir / "codebook_counts.npy", counts)
     (output_dir / "reconstruction_metrics.json").write_text(
         json.dumps(reco_metrics, indent=2) + "\n"
     )
@@ -1405,9 +1526,31 @@ def main() -> None:
     )
     log.info("Wrote tokenizer diagnostics to %s", output_dir)
 
+    if args.encoder_dim_analysis:
+        log.info("Collecting encoder outputs for latent dimension analysis")
+        z_e = collect_encoder_outputs_from_loader(
+            cfg=cfg,
+            model=model,
+            h5_files=list(args.h5_files) if args.h5_files else None,
+            split=args.split,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            num_events_per_file=args.num_events_per_file,
+            device=device,
+            max_valid_objects=args.max_valid_objects,
+        )
+        encoder_summary = plot_encoder_dimension_histograms(
+            z_e,
+            output_dir / "encoder_dim_histograms.png",
+        )
+        (output_dir / "encoder_dim_summary.json").write_text(
+            json.dumps(encoder_summary, indent=2) + "\n"
+        )
+
     if args.derived_electron_run_dir and args.derived_muon_run_dir:
         run_derived_lepton_diagnostics(args=args, output_dir=output_dir, device=device)
 
 
 if __name__ == "__main__":
     main()
+
