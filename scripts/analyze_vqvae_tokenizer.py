@@ -218,17 +218,29 @@ def codebook_size_from_model(model, cfg) -> int | list[int]:
     Tries common attribute names used by both LitVqVae and LitPqVae so the caller
     does not need to know which architecture is loaded.
     """
-    for attr in ("codebook_size", "n_codes", "subcodebook_size", "codebook_size_per_subspace"):
+    # Check explicit per-subspace / per-quantizer list attributes first.
+    for attr in ("codebook_size_per_subspace", "n_codes_per_subspace", "subcodebook_sizes"):
         val = getattr(model.hparams, attr, None)
         if val is not None:
             return int(val) if isinstance(val, (int, float)) else [int(s) for s in val]
-    for key in ("model.codebook_size", "model.n_codes", "model.subcodebook_size"):
+    # Fall back to scalar (or list-valued) generic attributes.
+    for attr in ("codebook_size", "n_codes", "subcodebook_size"):
+        val = getattr(model.hparams, attr, None)
+        if val is not None:
+            return int(val) if isinstance(val, (int, float)) else [int(s) for s in val]
+    for key in (
+        "model.codebook_size_per_subspace",
+        "model.n_codes_per_subspace",
+        "model.codebook_size",
+        "model.n_codes",
+        "model.subcodebook_size",
+    ):
         val = OmegaConf.select(cfg, key)
         if val is not None:
             return int(val) if isinstance(val, (int, float)) else [int(s) for s in val]
     raise ValueError(
         "Cannot determine codebook size from model hparams or config. "
-        "Expected one of: codebook_size, n_codes, subcodebook_size."
+        "Expected one of: codebook_size_per_subspace, codebook_size, n_codes, subcodebook_size."
     )
 
 def choose_device(device: str) -> torch.device:
@@ -1084,8 +1096,27 @@ def load_analysis_model(
     while f"vector_quantization.layers.{i}.embed" in state_dict:
         sizes.append(state_dict[f"vector_quantization.layers.{i}.embed"].shape[1])
         i += 1
+    
+    if not sizes:
+        for pq_template in (
+            "product_quantization.layers.{i}.embed",
+            "product_quantization.codebooks.{i}",
+            "product_quantization.{i}.embed",
+            "quantizer.codebooks.{i}",
+        ):
+            i = 0
+            while pq_template.format(i=i) in state_dict:
+                t = state_dict[pq_template.format(i=i)]
+                sizes.append(int(t.shape[0]))  # [n_codes, embed_dim]
+                i += 1
+            if sizes:
+                break
+
     if sizes:
-        raw["hyper_parameters"]["codebook_size"] = sizes[0] if len(set(sizes)) == 1 else sizes
+        patched = sizes[0] if len(set(sizes)) == 1 else sizes
+        raw["hyper_parameters"]["codebook_size"] = patched
+        if isinstance(patched, list):
+            raw["hyper_parameters"]["codebook_size_per_subspace"] = patched
         torch.save(raw, ckpt)
 
     log.info("Loading %s with %s", ckpt, model_cls.__name__)
