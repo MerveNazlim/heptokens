@@ -233,7 +233,7 @@ def get_sched(
     opt: Optimizer,
     steps_per_epoch: int = 0,
     max_lr: float | None = None,
-    max_epochs: float | None = None,
+    max_epochs: int | None = None,
     max_steps: int | None = None,
 ) -> schd._LRScheduler:
     """Return a pytorch learning rate schedular given a dict containing a name and other
@@ -308,7 +308,7 @@ def get_sched(
         return LinearWarmupRootDecay(opt, **dict_copy)
     if name == "warmup":
         return WarmupToConstant(opt, **dict_copy)
-    if name == "lr_sheduler.ExponentialLR":
+    if name == "lr_scheduler.ExponentialLR":
         return schd.ExponentialLR(opt, **dict_copy)
     if name == "lr_scheduler.ConstantLR":
         return schd.ConstantLR(opt, **dict_copy)
