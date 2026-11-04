@@ -26,8 +26,6 @@ import matplotlib
 import numpy as np
 from omegaconf import OmegaConf
 
-# ── Re-use everything from the existing analysis script ──────────────────────
-# Import the utility layer directly so there is zero code duplication.
 from analyze_vqvae_tokenizer import (
     apply_hep_style,
     choose_device,
@@ -47,7 +45,7 @@ from analyze_vqvae_tokenizer import (
 )
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.pyplot as plt
 
 log = logging.getLogger(__name__)
 
@@ -218,9 +216,6 @@ def plot_comparison_metric_bar(
     fig.tight_layout()
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
-
-
-# ── Main ─────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
