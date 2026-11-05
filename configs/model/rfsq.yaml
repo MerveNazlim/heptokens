@@ -1,5 +1,5 @@
 # configs/model/rfsq.yaml
-_target_: heptokens.models.rfsq.LitResidualFSQ
+_target_: heptokens.models.fsq.LitResidualFSQ
 encoder:
   _target_: heptokens.models.coders.Encoder
   _partial_: true
@@ -20,10 +20,8 @@ decoder:
 # codebook size per stage = prod(levels) (here 8*5*5*5 = 1000).
 levels: [8, 5, 5, 5]
 num_quantizers: 2
-# Per-dim latent normalization before the soft clamp (prevents saturated / dead dims).
-# target_std: std of each latent dim after normalization.
-dim_normalization: false
-target_std: 0.5
+# Reconstruction loss: l1 (as the VQ-VAE) or mse.
+recon_loss: l1
 
 learning_rate: 1e-3
 optimizer:

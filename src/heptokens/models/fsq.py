@@ -6,6 +6,7 @@ from typing import Dict, Tuple
 import re
 
 import torch
+import torch.nn.functional as F
 from lightning import LightningModule
 from torch.amp import autocast
 
@@ -13,6 +14,18 @@ from heptokens.models.coders import Decoder, Encoder
 from heptokens.models.utils import ScheduledOptimiserMixin
 
 log = logging.getLogger(__name__)
+
+
+def _check_recon_loss(recon_loss: str) -> str:
+    if recon_loss not in ("l1", "mse"):
+        raise ValueError(f"recon_loss must be 'l1' or 'mse', got {recon_loss!r}")
+    return recon_loss
+
+
+def _reconstruction_loss(reconstructed: torch.Tensor, original: torch.Tensor, recon_loss: str) -> torch.Tensor:
+    if recon_loss == "l1":
+        return F.l1_loss(reconstructed, original)
+    return ((reconstructed - original) ** 2).mean(dim=-1).mean()
 
 
 class LitFSQ(ScheduledOptimiserMixin, LightningModule):
@@ -23,6 +36,7 @@ class LitFSQ(ScheduledOptimiserMixin, LightningModule):
         decoder: Decoder, built with input_dim = len(levels)
         levels: Number of quantization levels per latent dimension, e.g. [8, 5, 5, 5]
             (codebook size = prod(levels))
+        recon_loss: Reconstruction loss, "l1" or "mse"
         learning_rate: Learning rate for optimizer
         feature_names: Feature names used for per-feature metric logging
         data_sample: Sample data used to infer the input dimension
@@ -33,6 +47,7 @@ class LitFSQ(ScheduledOptimiserMixin, LightningModule):
         encoder: Encoder,
         decoder: Decoder,
         levels: list[int],
+        recon_loss: str = "l1",
         learning_rate: float = 1e-3,
         optimizer=None,
         scheduler=None,
@@ -45,6 +60,7 @@ class LitFSQ(ScheduledOptimiserMixin, LightningModule):
 
         self.learning_rate = learning_rate
         self.feature_names = feature_names or []
+        self.recon_loss = _check_recon_loss(recon_loss)
 
         # Declare FSQ
         self.fsq = FSQ(levels)
@@ -91,7 +107,7 @@ class LitFSQ(ScheduledOptimiserMixin, LightningModule):
         reconstructed = reconstruction[mask]
         original = batch["csts"][mask]
 
-        reconstruction_loss = ((reconstructed - original) ** 2).mean(dim=-1).mean()
+        reconstruction_loss = _reconstruction_loss(reconstructed, original, self.recon_loss)
         return reconstruction_loss, reconstruction
 
     def _log_feature_reconstruction(
@@ -118,7 +134,7 @@ class LitFSQ(ScheduledOptimiserMixin, LightningModule):
 
     @staticmethod
     def _accumulate_code_counts(counts, indices):
-        valid = indices[indices >= 0]                          # drop padding (-1)
+        valid = indices[indices >= 0] # drop -1 padding
         counts += torch.bincount(valid, minlength=counts.numel())
 
     def _log_codebook_usage(self, prefix, counts):
@@ -127,12 +143,11 @@ class LitFSQ(ScheduledOptimiserMixin, LightningModule):
             return
         used = (counts > 0).sum().float()
         probs = counts[counts > 0].float() / total
-        entropy = -(probs * probs.log()).sum()               # nats
+        entropy = -(probs * probs.log()).sum()    
         perplexity = torch.exp(entropy)
         self.log(f"{prefix}/codebook/used_codes", used)
         self.log(f"{prefix}/codebook/used_fraction", used / counts.numel())
         self.log(f"{prefix}/codebook/entropy", entropy)
-        # entropy / log(codebook size): 1 = uniform usage, comparable across levels choices
         self.log(f"{prefix}/codebook/normalized_entropy", entropy / math.log(counts.numel()))
         self.log(f"{prefix}/codebook/perplexity", perplexity)
         counts.zero_()
@@ -242,9 +257,7 @@ class LitResidualFSQ(ScheduledOptimiserMixin, LightningModule):
         levels: Number of quantization levels per latent dimension, e.g. [8, 5, 5, 5]
             (codebook size per quantizer = prod(levels))
         num_quantizers: Number of residual FSQ stages; each token is num_quantizers indices
-        dim_normalization: Normalize each latent dim over valid objects (BatchNorm without
-            affine, running stats in eval) before the soft clamp, so no dim can saturate
-        target_std: Std of each latent dim after normalization
+        recon_loss: Reconstruction loss, "l1" (default, as LitVqVae) or "mse"
         learning_rate: Learning rate for optimizer
         feature_names: Feature names used for per-feature metric logging
         data_sample: Sample data used to infer the input dimension
@@ -256,8 +269,7 @@ class LitResidualFSQ(ScheduledOptimiserMixin, LightningModule):
         decoder: Decoder,
         levels: list[int],
         num_quantizers: int = 1,
-        dim_normalization: bool = False,
-        target_std: float = 0.5,
+        recon_loss: str = "l1",
         learning_rate: float = 1e-3,
         optimizer=None,
         scheduler=None,
@@ -270,8 +282,7 @@ class LitResidualFSQ(ScheduledOptimiserMixin, LightningModule):
 
         self.learning_rate = learning_rate
         self.feature_names = feature_names or []
-        self.dim_normalization = dim_normalization
-        self.target_std = target_std
+        self.recon_loss = _check_recon_loss(recon_loss)
 
         # Infer input dimension from data_sample if provided
         if data_sample is not None:
@@ -292,14 +303,6 @@ class LitResidualFSQ(ScheduledOptimiserMixin, LightningModule):
         )
         self.register_buffer(
             "_val_code_counts", torch.zeros(num_quantizers, n, dtype=torch.long), persistent=False
-        )
-
-        # Per-dim latent normalization; affine=False so a learned scale cannot push a dim back
-        # into saturation. running_mean / running_var are saved with the checkpoint.
-        self.latent_norm = (
-            torch.nn.BatchNorm1d(levels_dim, affine=False, eps=1e-5, momentum=0.1)
-            if dim_normalization
-            else None
         )
 
         # Declare encoder
@@ -328,7 +331,7 @@ class LitResidualFSQ(ScheduledOptimiserMixin, LightningModule):
         reconstructed = reconstruction[mask]
         original = batch["csts"][mask]
 
-        reconstruction_loss = ((reconstructed - original) ** 2).mean(dim=-1).mean()
+        reconstruction_loss = _reconstruction_loss(reconstructed, original, self.recon_loss)
         return reconstruction_loss, reconstruction
 
     def _log_feature_reconstruction(
@@ -381,26 +384,8 @@ class LitResidualFSQ(ScheduledOptimiserMixin, LightningModule):
         counts.zero_()
 
     def latent(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Encoder output, normalized per dim if dim_normalization: [batch_size, n_csts, levels_dim].
-
-        Statistics come from valid objects only; padded positions are set to 0.
-        """
-        z = self.encoder(batch)
-        if self.latent_norm is None:
-            return z
-        mask = batch["mask"].bool()
-        valid = z[mask]  # [n_valid, levels_dim]
-        if self.training and valid.shape[0] < 2:
-            # batch statistics need at least two objects; use the running ones instead
-            normed = torch.nn.functional.batch_norm(
-                valid, self.latent_norm.running_mean, self.latent_norm.running_var,
-                training=False, eps=self.latent_norm.eps,
-            )
-        else:
-            normed = self.latent_norm(valid)
-        z_norm = normed.new_zeros(z.shape)
-        z_norm[mask] = normed * self.target_std
-        return z_norm
+        """Encoder output before quantization: [batch_size, n_csts, levels_dim]."""
+        return self.encoder(batch)
 
     def encode(
         self, batch: Dict[str, torch.Tensor]

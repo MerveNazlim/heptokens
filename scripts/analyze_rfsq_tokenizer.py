@@ -1,16 +1,7 @@
 """Make post-training diagnostics for an event/object residual FSQ tokenizer.
 
 Data loading, preprocessing, reconstruction plots and codebook plots are shared with
-``analyze_vqvae_tokenizer.py`` and the per-dim level summary with ``analyze_fsq_tokenizer.py``.
-The residual-specific diagnostics live here:
-
-- reconstruction quality vs the number of stages used (decoding the first k stage codes only),
-- the latent residual left after each stage (expected to shrink about L-fold per stage),
-- the per-stage quantizer inputs ``residual / scale`` (should fill [-c, c], c = 1 + 1/(L-1);
-  inputs beyond +-1 fall in the end levels' bins, about 1/L of them for a uniform residual),
-- the per-stage, per-dim level usage,
-- the "stage infinity" reconstruction: the soft-clamped latent decoded without quantization,
-  i.e. the encoder-decoder limit that quantization can at best reach.
+``analyze_vqvae_tokenizer.py``. The residual-specific diagnostics live here:
 """
 
 from __future__ import annotations
@@ -26,9 +17,8 @@ import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 
-import analyze_fsq_tokenizer as fsq_base
 import analyze_vqvae_tokenizer as base
-from heptokens.models.rfsq import LitResidualFSQ, ResidualFSQ
+from heptokens.models.fsq import LitResidualFSQ, ResidualFSQ
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -258,15 +248,41 @@ def continuous_metrics(
     }
 
 
+def level_counts(digits: np.ndarray, levels: list[int]) -> list[np.ndarray]:
+    """Count how often each integer level is used, separately for every latent dim."""
+    return [
+        np.bincount(digits[:, dim], minlength=n_levels)[:n_levels]
+        for dim, n_levels in enumerate(levels)
+    ]
+
+
+def level_summary(counts: list[np.ndarray]) -> dict:
+    summary = {}
+    for dim, dim_counts in enumerate(counts):
+        total = int(dim_counts.sum())
+        used = dim_counts[dim_counts > 0]
+        probabilities = used / total if total else np.array([])
+        entropy = float(-np.sum(probabilities * np.log(probabilities)))
+        summary[f"dim_{dim}"] = {
+            "levels": int(len(dim_counts)),
+            "used_levels": int(len(used)),
+            "entropy_nats": entropy,
+            # exp(entropy) / L: 1 means every level used equally often
+            "perplexity_fraction": float(np.exp(entropy) / len(dim_counts)) if total else 0.0,
+            "end_level_fraction": float((dim_counts[0] + dim_counts[-1]) / total) if total else 0.0,
+        }
+    return summary
+
+
 def stage_level_summary(digits: np.ndarray, stage_inputs: np.ndarray, levels: list[int]) -> dict:
-    """Per stage: the FSQ per-dim level summary plus the fraction of inputs beyond +-1.
+    """Per stage: the per-dim level summary plus the fraction of inputs beyond +-1.
 
     Inputs in (1, c] map to the end levels by design (their bin is as wide as the others), so
     ~1/L is expected for a uniform residual; much more means the residual exceeds the stage range.
     """
     summary = {}
     for stage in range(digits.shape[0]):
-        dims = fsq_base.level_summary(fsq_base.level_counts(digits[stage], levels))
+        dims = level_summary(level_counts(digits[stage], levels))
         for dim in range(len(levels)):
             dims[f"dim_{dim}"]["beyond_unit_fraction"] = float(np.mean(np.abs(stage_inputs[stage][:, dim]) > 1))
         summary[f"stage_{stage}"] = dims
@@ -377,6 +393,42 @@ def plot_stage_inputs(stage_inputs: np.ndarray, levels: list[int], output_path: 
     )
 
 
+def plot_feature_overlay(
+    original: np.ndarray,
+    reconstruction: np.ndarray,
+    feature_names: list[str],
+    object_name: str,
+    output_dir: Path,
+) -> None:
+    """Truth vs reconstruction per feature; same as the VQ-VAE overlay, labelled Residual FSQ."""
+    for feature_idx, feature_name in enumerate(feature_names):
+        if feature_idx >= original.shape[1] or feature_idx >= reconstruction.shape[1]:
+            log.warning("Skipping %s: feature is not in the reconstructed arrays", feature_name)
+            continue
+        orig, reco, axis_label = base.display_values(
+            original[:, feature_idx],
+            reconstruction[:, feature_idx],
+            feature_name,
+        )
+        orig, reco = base.finite_pair(orig, reco)
+        if len(orig) == 0:
+            log.warning("Skipping %s: no finite values", feature_name)
+            continue
+        bins = base.histogram_bins(np.concatenate([orig, reco]), n_bins=75)
+
+        fig, ax = plt.subplots(figsize=(8.0, 6.0))
+        ax.hist(orig, bins=bins, histtype="step", density=True, linewidth=2.0, color="black", label="Truth")
+        ax.hist(reco, bins=bins, histtype="step", density=True, linewidth=2.0, color="#00A000", label="Residual FSQ")
+        ax.set_title(f"{object_name.capitalize()} {base.feature_label(feature_name)}", fontsize=17)
+        ax.set_xlabel(axis_label, fontsize=14)
+        ax.set_ylabel("Normalized", fontsize=14)
+        ax.legend(frameon=False, fontsize=12)
+        base.apply_hep_style(ax)
+        fig.tight_layout()
+        fig.savefig(output_dir / f"{base.safe_filename(feature_name)}_overlay.png", dpi=180)
+        plt.close(fig)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     args = parse_args()
@@ -454,9 +506,7 @@ def main() -> None:
     (output_dir / "rfsq_level_summary.json").write_text(json.dumps(stage_summary, indent=2) + "\n")
 
     base.plot_feature_triptychs(original, reconstruction, feature_names, object_name, output_dir)
-    base.plot_feature_overlay(
-        original, reconstruction, feature_names, object_name, output_dir, model_label="Residual FSQ"
-    )
+    plot_feature_overlay(original, reconstruction, feature_names, object_name, output_dir)
     base.plot_residual_summary(reco_metrics, output_dir / "residual_summary.png")
     base.plot_codebook_usage(counts, output_dir / "codebook_frequency.png")
     base.plot_codebook_frequency_hist(counts, object_name, output_dir / "codebook_token_frequency_hist.png")
