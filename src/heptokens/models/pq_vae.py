@@ -32,7 +32,7 @@ class ProductQuantizer(nn.Module):
         *,
         dim: int,
         num_quantizers: int,
-        codebook_size: int | list[int],
+        codebook_size: int,
         commitment: float = 1.0,
     ):
         super().__init__()
@@ -42,26 +42,16 @@ class ProductQuantizer(nn.Module):
                 f"Valid choices: {[m for m in range(1, dim + 1) if dim % m == 0]}"
             )
 
-        if isinstance(codebook_size, int):
-            codebook_sizes = [codebook_size] * num_quantizers
-        else:
-            codebook_sizes = [int(cs) for cs in codebook_size]
-            if len(codebook_sizes) != num_quantizers:
-                raise ValueError(
-                    f"codebook_size list length ({len(codebook_sizes)}) must equal "
-                    f"num_quantizers ({num_quantizers})"
-                )
-
         self.dim = dim
         self.sub_dim = dim // num_quantizers
-        self.codebook_sizes = codebook_sizes
+        self.codebook_sizes = codebook_size
         self.layers = nn.ModuleList([
             VectorQuantize(
                 dim=self.sub_dim,
-                codebook_size=cs,
+                codebook_size=codebook_size,
                 commitment=commitment,
             )
-            for cs in codebook_sizes
+            for _ in range(num_quantizers)
         ])
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -87,8 +77,7 @@ class LitPqVae(LitVqVae):
     Args:
         encoder: Encoder class to instantiate
         decoder: Decoder class to instantiate
-        codebook_size: Number of codes per sub-space codebook; either a single int
-                       (all sub-spaces share the same size) or a list of M ints for independent sizes per sub-space
+        codebook_size: Number of codes per sub-space codebook 
         codebook_dim: Total embedding dimension; must be divisible by num_quantizers
         num_quantizers: Number of sub-spaces M to split codebook_dim into
         commitment_weight: Weight for commitment loss
@@ -108,21 +97,13 @@ class LitPqVae(LitVqVae):
     """
 
     def __init__(self, **kwargs):
-        _pq_codebook_size = kwargs.pop("codebook_size")
-        if isinstance(_pq_codebook_size, int):
-            _codebook_sizes = _pq_codebook_size
-            _parent_size = _pq_codebook_size
-        else:
-            _codebook_sizes = [int(cs) for cs in _pq_codebook_size]  # strips ListConfig
-            _parent_size = _codebook_sizes[0]  # parent's VQ is replaced below
-
-        super().__init__(codebook_size=_parent_size, **kwargs)
+        super().__init__(**kwargs)
 
         # Replace the parent's ResidualVQ with a product quantizer.
         self.vector_quantization = ProductQuantizer(
             dim=int(self.hparams.codebook_dim),
             num_quantizers=int(self.hparams.num_quantizers),
-            codebook_size=_codebook_sizes,
+            codebook_size=int(self.hparams.codebook_size),
             commitment=float(self.hparams.commitment_weight),
         )
 
@@ -155,6 +136,7 @@ class LitPqVae(LitVqVae):
         but each sub-codebook is (codebook_size, sub_dim)
         """
         sub_dim = self.vector_quantization.sub_dim
+        codebook_size = self.vector_quantization.codebook_size
 
         idx = next(
             i for i, l in enumerate(self.vector_quantization.layers) if l is layer
@@ -163,8 +145,7 @@ class LitPqVae(LitVqVae):
         if replacements.shape[-1] == int(self.hparams.codebook_dim):
             replacements = replacements[..., idx * sub_dim : (idx + 1) * sub_dim]
 
-        layer_codebook_size = self.vector_quantization.codebook_sizes[idx]
-        shape = (layer_codebook_size, sub_dim)
+        shape = (codebook_size, sub_dim)
 
         codebook = getattr(layer, "_codebook", layer)
         row_attrs = ("embed", "codebook", "weight", "embed_avg", "ema_embed", "ema_embedding")
@@ -189,7 +170,7 @@ class LitPqVae(LitVqVae):
 
         for attr in cluster_attrs:
             tensor = getattr(codebook, attr, None)
-            if torch.is_tensor(tensor) and tensor.shape[-1] == layer_codebook_size:
+            if torch.is_tensor(tensor) and tensor.shape[-1] == int(self.hparams.codebook_size):
                 self._assign_cluster_rows(tensor, dead_indices)
 
         return touched

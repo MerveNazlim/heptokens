@@ -212,37 +212,6 @@ def model_cls_from_type(model_type: str) -> type:
         return LitVqVae
     raise ValueError(f"Unknown model type: {model_type!r}. Choose 'vqvae' or 'pqvae'.")
 
-def codebook_size_from_model(model, cfg) -> int | list[int]:
-    """Extract the per-subspace/per-quantizer codebook size from model hparams.
-
-    Tries common attribute names used by both LitVqVae and LitPqVae so the caller
-    does not need to know which architecture is loaded.
-    """
-    # Check explicit per-subspace / per-quantizer list attributes first.
-    for attr in ("codebook_size_per_subspace", "n_codes_per_subspace", "subcodebook_sizes"):
-        val = getattr(model.hparams, attr, None)
-        if val is not None:
-            return int(val) if isinstance(val, (int, float)) else [int(s) for s in val]
-    # Fall back to scalar (or list-valued) generic attributes.
-    for attr in ("codebook_size", "n_codes", "subcodebook_size"):
-        val = getattr(model.hparams, attr, None)
-        if val is not None:
-            return int(val) if isinstance(val, (int, float)) else [int(s) for s in val]
-    for key in (
-        "model.codebook_size_per_subspace",
-        "model.n_codes_per_subspace",
-        "model.codebook_size",
-        "model.n_codes",
-        "model.subcodebook_size",
-    ):
-        val = OmegaConf.select(cfg, key)
-        if val is not None:
-            return int(val) if isinstance(val, (int, float)) else [int(s) for s in val]
-    raise ValueError(
-        "Cannot determine codebook size from model hparams or config. "
-        "Expected one of: codebook_size_per_subspace, codebook_size, n_codes, subcodebook_size."
-    )
-
 def choose_device(device: str) -> torch.device:
     if device == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1510,15 +1479,12 @@ def main() -> None:
 
     feature_names = feature_names_from_cfg(cfg, original.shape[1])
     object_name = object_name_from_cfg(cfg)
-    codebook_size = codebook_size_from_model(model, cfg)
+    codebook_size = int(getattr(model.hparams, "codebook_size", cfg.model.codebook_size))
     counts = codebook_counts(indices, codebook_size)
     reco_metrics = reconstruction_metrics(original, reconstruction, feature_names)
     usage_summary = codebook_summary(counts)
 
-    if isinstance(counts, list):
-        np.savez(output_dir / "codebook_counts.npz", **{f"q{i}": c for i, c in enumerate(counts)})
-    else:
-        np.save(output_dir / "codebook_counts.npy", counts)
+    np.save(output_dir / "codebook_counts.npy", counts)
     (output_dir / "reconstruction_metrics.json").write_text(
         json.dumps(reco_metrics, indent=2) + "\n"
     )
