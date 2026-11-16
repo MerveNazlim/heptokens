@@ -262,17 +262,28 @@ selection are separate. Do not use capped smoke outputs for production.
 
 ## 6. Train the event foundation models
 
-From the repository root, set `ATLAS_PREPARED_DIR` to the absolute path to
-the prepared Q8 or continuous shards, and `ATLAS_OUTPUT_DIR` to a new output
-location. Choose the matching experiment:
+Use the prepared `train/` and `val/` shards from sections 4–5. Run from
+the repository root. Set `WORK` to an absolute path and choose a fresh
+output location:
 
-    pixi run python scripts/train.py experiment=event_foundation_q8
-    pixi run python scripts/train.py experiment=event_foundation_continuous
+    WORK=/work/heptokens
+    export ATLAS_OUTPUT_DIR="$WORK/results/event_pretraining"
+
+    # Parallel Q8: use the 131,588-entry Data16 vocabulary.
+    ATLAS_PREPARED_DIR="$WORK/prepared/q8" \
+      pixi run python scripts/train.py experiment=event_foundation_q8 seed=42
+
+    # Flat continuous: use the preprocessed feature columns, not decoded Q8.
+    ATLAS_PREPARED_DIR="$WORK/prepared/continuous" \
+      pixi run python scripts/train.py experiment=event_foundation_continuous seed=42
 
 These are the parallel Q8 and flat continuous Data16 presets. Both use
 10 epochs and 448 events per GPU on eight GPUs. The presets default to seed
 42; use `seed=43` or `seed=44` for the other runs. The continuous preset
-keeps the data-loader seed at 42. The models are in
+keeps the data-loader seed at 42. Append `--cfg job --resolve` to inspect
+either resolved configuration without training. Each run writes
+`full_config.yaml` and `checkpoints/last.ckpt` under its own run directory
+inside `ATLAS_OUTPUT_DIR`. The models are in
 [`src/heptokens/models/`](src/heptokens/models/) and the presets in
 [`configs/experiment/`](configs/experiment/).
 
@@ -293,27 +304,72 @@ It requires a reconstructed four-electron/muon candidate: lepton
 all opposite-sign pair masses above 4 GeV, and `m4l > 70 GeV`.
 No narrow Higgs-mass window is applied. Taus remain model inputs.
 
-The [benchmark config](configs/downstream/hzz_4l_core.json) lists the pinned
-data and checkpoint artifacts. Unpack `common.tar.gz` and the matching
-`q8.tar.gz` or `continuous.tar.gz` into one dataset root. The trainer reads
-the existing selected Parquets and canonical batch schedules; it does not
-retokenize, rewrite shards or resplit events.
+### Stage the benchmark inputs
 
+The [benchmark config](configs/downstream/hzz_4l_core.json) lists the pinned
+dataset archives under `dataset.archive_prefix` and the pretrained files
+under `sources`. If staging from GCS, use an account with read access.
+Verify the archive SHA-256 values against `dataset.archive_sha256` before
+extracting. This example assumes the downloaded archives and seed-42 Q8
+source files are already under `$WORK/archives`:
+
+    WORK=/work/heptokens
+    ARCHIVES="$WORK/archives/hzz_4l"
+    DATASET="$WORK/prepared/hzz_4l_q8"
+    RAW_SOURCE="$WORK/archives/pretrained/q8_p42"
+    SOURCE="$WORK/sources/q8_p42"
+    mkdir -p "$DATASET" "$SOURCE"
+    tar -xzf "$ARCHIVES/common.tar.gz" -C "$DATASET"
+    tar -xzf "$ARCHIVES/q8.tar.gz" -C "$DATASET"
+    cp "$RAW_SOURCE/last.ckpt" "$SOURCE/checkpoint.ckpt"
+    cp "$RAW_SOURCE/full_config.yaml" "$SOURCE/config.yaml"
+    cp "$RAW_SOURCE/job_status.txt" "$SOURCE/status.txt"
+    cp "$RAW_SOURCE/part-group-00000-00000.parquet" "$SOURCE/vocabulary.parquet"
+
+The last file is the vocabulary shard pinned under `sources.q8_p42`; it
+lets the trainer verify the original Q8 code-to-ID mapping. For continuous,
+unpack `continuous.tar.gz` instead of `q8.tar.gz`, use the
+`continuous_flat_p42` source record and omit the vocabulary shard. In both
+cases, the dataset root contains `selection/`, `canonical_index/`, and
+the chosen representation directory. The trainer reads these Parquets
+without rewriting them or resplitting events.
+
+### Check and run a fit
+
+Use the pinned checkpoint and its original config and status, not a new
+checkpoint from the pretraining example. Start with the CPU preflight:
+
+    pixi run python scripts/train_hzz_4l.py \
+      --dataset-root "$DATASET" --run-key q8_finetune_p42 \
+      --source-dir "$SOURCE" --preflight-only
+
+For a full fit, expose exactly one CUDA GPU and use an output directory
+that does not yet exist:
+
+    OUT="$WORK/results/hzz_4l/q8_finetune_p42"
     pixi run python scripts/train_hzz_4l.py \
       --dataset-root "$DATASET" --run-key q8_finetune_p42 \
       --source-dir "$SOURCE" --output-dir "$OUT"
 
-The run-key prefix is `q8` or `continuous_flat`. Fine-tune and frozen fits
-use `finetune_p42` or `frozen_p42` (also 43 and 44), with classifier seed 42.
-Stage the source in `$SOURCE` as `checkpoint.ckpt`, `config.yaml` and
-`status.txt`, plus `vocabulary.parquet` when listed. Scratch fits use
-`scratch_s42` (also 43 and 44) and omit `--source-dir`. Add
-`--preflight-only` to check one batch without training.
+For the flat input, use `continuous_flat_finetune_p42` with the continuous
+dataset and source. For a frozen backbone, substitute `frozen_p42` and
+choose a different output directory; it uses the same source checkpoint.
+For a scratch fit, use `scratch_s42` and omit `--source-dir`:
 
-Fits use one GPU, ten epochs, batch size 256, and a linear five-class head.
-Checkpoint selection uses validation macro-AUC; predictions are exported for
-the held-out test events. The config also pins the original DAG 521 runtime
-for exact historical replay.
+    pixi run python scripts/train_hzz_4l.py \
+      --dataset-root "$DATASET" --run-key q8_scratch_s42 \
+      --output-dir "$WORK/results/hzz_4l/q8_scratch_s42"
+
+Seeds 43 and 44 follow the same naming. Fine-tune and frozen fits vary the
+pretraining checkpoint and hold classifier seed fixed at 42. Scratch fits
+vary the classifier seed.
+
+Fits use ten epochs, batch size 256, and a linear five-class head. Outputs
+include `checkpoints/best.ckpt` (chosen by validation macro-AUC),
+`test_evaluation/test_predictions.npz` and
+`test_evaluation/evaluation_summary.json` for the held-out test events.
+For exact historical replay, the original DAG 521 `runtime.tar.gz` is in
+the same dataset archive prefix; its SHA-256 is in the benchmark config.
 
 ## Other exporters
 
