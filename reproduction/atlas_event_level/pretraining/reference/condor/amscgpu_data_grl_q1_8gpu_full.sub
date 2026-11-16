@@ -1,0 +1,20 @@
+# Historical launch reference only; do not submit unchanged.
+universe = vanilla
+executable = amscgpu_foundation_q1_train.sh
+arguments = $(ClusterId) $(ProcId)
+environment = "PROJECT_ARCHIVE=heptokens-google-data-grl-b300.tar.gz GCS_PREPARED_PREFIX=gs://EXAMPLE-PROJECT-BUCKET/bucket_results/foundation_pretrain/data_grl_data16_200m_v1/q1 GCS_OUTPUT_PREFIX=gs://EXAMPLE-PROJECT-BUCKET/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q1_full EXPECTED_ARCHIVE_SHA256=ab256c9feb6aab2195570a67f5ede231f95ed5bd26dad329407b6a2b8f88d558 EXPECTED_MANIFEST_SHA256=5a6eaa15eb859b1a77429ba39a55d274d291547ab81aae2bf2c9c611b3bc1fd8 EXPECTED_TRAIN_ROWS=194491678 EXPECTED_VAL_ROWS=21603969 EXPECTED_TRAIN_SHARDS=3898 EXPECTED_VAL_SHARDS=440 SEED=42 EPOCHS=10 BATCH_SIZE=448 NUM_WORKERS=3 NUM_DEVICES=8 TRAINER_STRATEGY=ddp VOCAB_SIZE=98820 MAX_QUANTIZERS=1 QUANTIZER_EMBEDDING_DIM=32 STREAM_BATCH_SIZE=4096 SHUFFLE_BUFFER_SIZE=8192 LIMIT_TRAIN_BATCHES=1.0 LIMIT_VAL_BATCHES=500 CHECKPOINT_SYNC_INTERVAL=900 PROJECT_NAME=atlas_event_foundation_pretrain_data16_200m NETWORK_NAME=q1_b448_8gpu_e10_seed42 PYTORCH_VERSION=2.11.0 TORCHVISION_VERSION=0.26.0 TORCHAUDIO_VERSION=2.11.0 PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu130"
++amscgpu_job = true
+request_gpus = 8
+request_cpus = 64
+request_memory = 128GB
+request_disk = 100GB
+output = logs/amscgpu_data_grl_q1_full.$(ClusterId).$(ProcId).out
+error = logs/amscgpu_data_grl_q1_full.$(ClusterId).$(ProcId).err
+log = logs/amscgpu_data_grl_q1_full.$(ClusterId).log
+stream_output = True
+stream_error = True
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_input_files = heptokens-google-data-grl-b300.tar.gz,example-worker-service-account.json,b300_nccl_preflight.py,pixi-b300.toml,pixi-b300.lock
+transfer_output_files =
+queue 1

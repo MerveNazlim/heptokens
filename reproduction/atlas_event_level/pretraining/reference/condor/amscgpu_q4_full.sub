@@ -1,0 +1,20 @@
+# Historical launch reference only; do not submit unchanged.
+universe = vanilla
+executable = amscgpu_q4_train.sh
+arguments = $(ClusterId) $(ProcId)
+environment = "GCS_PREPARED_PREFIX=gs://EXAMPLE-PROJECT-BUCKET/bucket_results/foundation_pretrain/data_grl_data16_200m_final_q4_v1/q4 GCS_OUTPUT_PREFIX=gs://EXAMPLE-PROJECT-BUCKET/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/final_q4_study/q4_direct_full EXPECTED_Q4_UPDATE_SHA256=2cbb72e615432973909d0735c194a9ee847a95273cf47bcc46fc704248ff0934 EXPECTED_ARCHIVE_SHA256=2be1e53caa4eabe65a878d5bbea3d84a1118618585b5a6a6e9b52327869f4b2f NUM_DEVICES=8 TRAINER_STRATEGY=ddp SEED=42 EPOCHS=10 BATCH_SIZE=448 NUM_WORKERS=3 LIMIT_TRAIN_BATCHES=1.0 LIMIT_VAL_BATCHES=500 MASK_PROB=0.15 EXPECTED_GLOBAL_STEPS=540890 CHECKPOINT_SYNC_INTERVAL=300 NETWORK_NAME=q4_direct_b448_8gpu_e10_seed42"
++amscgpu_job = true
+request_gpus = 8
+request_cpus = 64
+request_memory = 128GB
+request_disk = 100GB
+output = logs/amscgpu_q4_full.$(ClusterId).$(ProcId).out
+error = logs/amscgpu_q4_full.$(ClusterId).$(ProcId).err
+log = logs/amscgpu_q4_full.$(ClusterId).log
+stream_output = True
+stream_error = True
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_input_files = heptokens-google-data-grl-variants-b300-v2.tar.gz,heptokens-q4-campaign-update.tar.gz,example-worker-service-account.json,pixi-b300.toml,pixi-b300.lock,b300_nccl_preflight.py
+transfer_output_files =
+queue 1

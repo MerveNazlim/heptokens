@@ -1,0 +1,10 @@
+defaults:
+  - foundation_q1_projected_seed_matched_multiclass
+  - _self_
+
+_target_: heptokens.models.foundation_multiclass_controls.LitTokenMulticlassControl
+control_mode: scratch
+n_classes: 5
+class_weights: null
+freeze_backbone: false
+classifier_hidden_dim: null

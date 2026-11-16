@@ -1,0 +1,102 @@
+{
+  "archive_layers_in_order": [
+    "baseline_ab256"
+  ],
+  "checkpoint_sha256": "5dc139f202bf0fa5e357550e1400fe8f2ed809abe60eb67ccf349974304828f3",
+  "effective_config": {
+    "callbacks": [
+      "activation_monitor",
+      "checkpoint_per_epoch",
+      "live_metrics",
+      "lr_monitor",
+      "model_summary"
+    ],
+    "datamodule": {
+      "_target_": "heptokens.data.token_parquet.TokenParquetPretrainModule",
+      "batch_size": 448,
+      "include_tokens": true,
+      "mask_column": null,
+      "max_sequences": null,
+      "multiprocessing_context": null,
+      "n_classes": 1,
+      "num_workers": 3,
+      "persistent_workers": false,
+      "pin_memory": true,
+      "seed": 42,
+      "shuffle_buffer_size": 8192,
+      "stream_batch_size": 4096,
+      "token_column": null,
+      "train_frac": 0.9,
+      "type_column": null,
+      "val_frac": 0.1
+    },
+    "float32_matmul_precision": "medium",
+    "model": {
+      "_target_": "heptokens.models.foundation_grouped.LitGroupedMaskedSequenceModel",
+      "dropout": 0.1,
+      "hidden_dim": 256,
+      "learning_rate": 0.0001,
+      "mask_prob": 0.15,
+      "mask_token_id": 3,
+      "max_quantizers": 8,
+      "max_seq_length": 256,
+      "num_heads": 8,
+      "num_layers": 4,
+      "num_type_ids": 12,
+      "optimizer": {
+        "_partial_": true,
+        "_target_": "torch.optim.AdamW",
+        "lr": 0.0001,
+        "weight_decay": 0.01
+      },
+      "pad_token_id": 0,
+      "quantizer_embedding_dim": 32,
+      "scheduler": {
+        "_partial_": true,
+        "_target_": "heptokens.models.utils.warmup_cosine_scheduler",
+        "min_lr": 1e-06,
+        "warmup_epochs": 1
+      },
+      "use_position_embedding": true,
+      "use_type_embedding": true,
+      "vocab_size": 131588
+    },
+    "seed": 42,
+    "trainer": {
+      "_target_": "lightning.Trainer",
+      "accelerator": "gpu",
+      "check_val_every_n_epoch": 1,
+      "devices": 8,
+      "gradient_clip_val": null,
+      "limit_train_batches": 1.0,
+      "limit_val_batches": 500,
+      "log_every_n_steps": 50,
+      "max_epochs": 10,
+      "num_nodes": 1,
+      "reload_dataloaders_every_n_epochs": 1,
+      "strategy": "ddp",
+      "val_check_interval": 1.0
+    }
+  },
+  "finished_receipt": {
+    "archive_sha256": "ab256c9feb6aab2195570a67f5ede231f95ed5bd26dad329407b6a2b8f88d558",
+    "batch_size_per_gpu": "448",
+    "epochs": "10",
+    "exit_code": "0",
+    "global_batch_size": "3584",
+    "manifest_sha256": "20ae12ae48c8420e0605159ddd67430560de38f48194caf2001673f217cf7829",
+    "num_devices": "8",
+    "pytorch_version": "2.11.0",
+    "seed": "42",
+    "torchaudio_version": "2.11.0",
+    "torchvision_version": "0.26.0"
+  },
+  "full_config_sha256": "9bd6d64ed8efd132707f76b5ace99921198665807aa45665e629dc0a412687b4",
+  "job_status_sha256": "157e1fde978ba758e0452208944eebd15a7b7cf99b3b699296c6cde017c1a020",
+  "model_family": "q8",
+  "prepared_manifest_sha256": "20ae12ae48c8420e0605159ddd67430560de38f48194caf2001673f217cf7829",
+  "pretraining_job": "131.0",
+  "pretraining_seed": 42,
+  "resolved_pixi_lock_sha256": "ba154627f585bf1013dbfbca459589a4a78fd04a3d004f9b84a6b74717507aa9",
+  "run_key": "q8_p42"
+}

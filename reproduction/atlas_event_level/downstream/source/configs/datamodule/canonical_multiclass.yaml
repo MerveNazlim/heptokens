@@ -1,0 +1,17 @@
+defaults:
+  - token_parquet_grouped_classification
+  - _self_
+
+_target_: heptokens.data.canonical_batch_classification.CanonicalBatchClassificationModule
+canonical_index_dir: null
+canonical_schedule_dir: null
+canonical_cache_bytes: 536870912
+production: true
+num_workers: 0
+batch_size: 256
+n_classes: 5
+max_sequences: null
+stream_batch_size: 4096
+shuffle_buffer_size: 8192
+persistent_workers: false
+

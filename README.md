@@ -4,8 +4,9 @@ Train one VQ-VAE/RVQ tokenizer per object type, evaluate its reconstruction, and
 convert H5 events into grouped Q1, Q8 and continuous Parquet datasets.
 
 This guide covers the tokenizer and Parquet code in the event_level branch.
-Grouped foundation-model implementations are not included here yet; pretraining
-and fine-tuning will be documented when those models are integrated.
+For the executed ATLAS event-foundation runs, see the
+[archived pretraining and four-lepton workflows](reproduction/atlas_event_level/README.md).
+Those are separate, versioned sources and do not change this guide's tokenizer or Parquet workflow.
 
 ## Setup
 

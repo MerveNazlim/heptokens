@@ -1,0 +1,147 @@
+{
+  "resolved_pixi_lock_path": "reference/condor/q4-latest-hier-seed42-pixi.lock",
+  "resolved_pixi_lock_sha256": "ba154627f585bf1013dbfbca459589a4a78fd04a3d004f9b84a6b74717507aa9",
+  "runs": {
+    "continuous_flat_p42": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "62e4d6cc4f66d0ea3ff99805169697e9e2ed67424751de118eafcf20e1414e13",
+      "entrypoint": "scripts/benchmark_train.py",
+      "pretraining_job": "133.0",
+      "receipt": "reference/receipts/continuous_flat_p42.json"
+    },
+    "continuous_flat_p43": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "649568039fdff1875d259a5d7811de468bc679876d4bc69db9edd2ed351b74a4",
+      "entrypoint": "scripts/benchmark_train.py",
+      "pretraining_job": "137.0",
+      "receipt": "reference/receipts/continuous_flat_p43.json"
+    },
+    "continuous_flat_p44": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "5f2090ee5cb81b8dd6315a7f480efe285bd4af516d58866cf3407583e81a4b76",
+      "entrypoint": "scripts/benchmark_train.py",
+      "pretraining_job": "137.1",
+      "receipt": "reference/receipts/continuous_flat_p44.json"
+    },
+    "hierarchical_kin_aux_p42": {
+      "archive_layers_in_order": [
+        "variant_2be1e53",
+        "hierarchical_497ac79"
+      ],
+      "checkpoint_sha256": "f339c2f3694dc0b39954a9305730d368c382c05a53acc6eab311c12e055df170",
+      "entrypoint": "scripts/benchmark_train.py",
+      "pretraining_job": "287.0",
+      "receipt": "reference/receipts/hierarchical_kin_aux_p42.json"
+    },
+    "hierarchical_kin_aux_p43": {
+      "archive_layers_in_order": [
+        "variant_2be1e53",
+        "hierarchical_497ac79"
+      ],
+      "checkpoint_sha256": "3db35dbc7eeb682fd9094a7ff59f4f16814e3c4ffde80c8403cf9cd89736f752",
+      "entrypoint": "scripts/benchmark_train.py",
+      "pretraining_job": "299.0",
+      "receipt": "reference/receipts/hierarchical_kin_aux_p43.json"
+    },
+    "hierarchical_kin_aux_p44": {
+      "archive_layers_in_order": [
+        "variant_2be1e53",
+        "hierarchical_497ac79"
+      ],
+      "checkpoint_sha256": "9acb44902b6cc1190e8f41dd6d5800ab55398f3722b0d07050c6530dd5f6e92e",
+      "entrypoint": "scripts/benchmark_train.py",
+      "pretraining_job": "300.0",
+      "receipt": "reference/receipts/hierarchical_kin_aux_p44.json"
+    },
+    "q1_projected_p42": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "71b3d436b37914e7f1214609e3142a914190a4cc6b4d0c0cbc03779dfe482bd7",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "130.0",
+      "receipt": "reference/receipts/q1_projected_p42.json"
+    },
+    "q1_projected_p43": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "309c955de1ba7a0c642c9d06cffb8b7671c11411829cb2f25fda05e06725dec9",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "135.0",
+      "receipt": "reference/receipts/q1_projected_p43.json"
+    },
+    "q1_projected_p44": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "0f21e2b3d77dc5713d2d787026d6a57f00632a4b47ad195edb1f36df7f1a6238",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "135.1",
+      "receipt": "reference/receipts/q1_projected_p44.json"
+    },
+    "q4_p42": {
+      "archive_layers_in_order": [
+        "variant_2be1e53",
+        "q4_2cbb72e"
+      ],
+      "checkpoint_sha256": "01cd6b9a20bb9a623d85a261aed9d661c344da620a7d356f09a25ada27f3b381",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "197.0",
+      "receipt": "reference/receipts/q4_p42.json"
+    },
+    "q4_p43": {
+      "archive_layers_in_order": [
+        "variant_2be1e53",
+        "q4_2cbb72e"
+      ],
+      "checkpoint_sha256": "fd4623a0fd017b8828726b962a9fc0a01263167d7fbd465e666bf30eaf564012",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "297.0",
+      "receipt": "reference/receipts/q4_p43.json"
+    },
+    "q4_p44": {
+      "archive_layers_in_order": [
+        "variant_2be1e53",
+        "q4_2cbb72e"
+      ],
+      "checkpoint_sha256": "cb1537204ca9ceb3d293ba2ee5d85828437302bc8b5bff666606e2fff411c0e6",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "298.0",
+      "receipt": "reference/receipts/q4_p44.json"
+    },
+    "q8_p42": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "5dc139f202bf0fa5e357550e1400fe8f2ed809abe60eb67ccf349974304828f3",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "131.0",
+      "receipt": "reference/receipts/q8_p42.json"
+    },
+    "q8_p43": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "ecf3c35027d5b344d6ba4a6e9227a39a70356703841359da3103fc20f69fc7fd",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "136.0",
+      "receipt": "reference/receipts/q8_p43.json"
+    },
+    "q8_p44": {
+      "archive_layers_in_order": [
+        "baseline_ab256"
+      ],
+      "checkpoint_sha256": "a7652c820b46a751e27ce5848d90aed3cd0ad7320dbe5f055a5702f67b17f865",
+      "entrypoint": "scripts/train.py",
+      "pretraining_job": "136.1",
+      "receipt": "reference/receipts/q8_p44.json"
+    }
+  }
+}

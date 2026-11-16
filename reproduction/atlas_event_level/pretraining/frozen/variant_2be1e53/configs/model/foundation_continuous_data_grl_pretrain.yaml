@@ -1,0 +1,6 @@
+defaults:
+  - foundation_continuous_flat_pretrain
+  - _self_
+
+architecture: flat
+

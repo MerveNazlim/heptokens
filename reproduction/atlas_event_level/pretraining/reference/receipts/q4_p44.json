@@ -1,0 +1,111 @@
+{
+  "archive_layers_in_order": [
+    "variant_2be1e53",
+    "q4_2cbb72e"
+  ],
+  "checkpoint_sha256": "cb1537204ca9ceb3d293ba2ee5d85828437302bc8b5bff666606e2fff411c0e6",
+  "effective_config": {
+    "callbacks": [
+      "activation_monitor",
+      "checkpoint_per_epoch",
+      "live_metrics",
+      "lr_monitor",
+      "masking_audit",
+      "model_summary"
+    ],
+    "datamodule": {
+      "_target_": "heptokens.data.token_parquet.TokenParquetPretrainModule",
+      "batch_size": 597,
+      "include_tokens": true,
+      "mask_column": null,
+      "max_sequences": null,
+      "multiprocessing_context": null,
+      "n_classes": 1,
+      "num_workers": 3,
+      "persistent_workers": false,
+      "pin_memory": true,
+      "seed": 44,
+      "shuffle_buffer_size": 8192,
+      "stream_batch_size": 4096,
+      "token_column": null,
+      "train_frac": 0.9,
+      "type_column": null,
+      "val_frac": 0.1
+    },
+    "float32_matmul_precision": "medium",
+    "model": {
+      "_target_": "heptokens.models.foundation_grouped.LitGroupedMaskedSequenceModel",
+      "dropout": 0.1,
+      "ensure_masked_physical_object_per_event": true,
+      "hidden_dim": 256,
+      "learning_rate": 0.0001,
+      "mask_prob": 0.15,
+      "mask_token_id": 3,
+      "max_quantizers": 4,
+      "max_seq_length": 256,
+      "num_heads": 8,
+      "num_layers": 4,
+      "num_type_ids": 12,
+      "object_projection_mode": "identity",
+      "optimizer": {
+        "_partial_": true,
+        "_target_": "torch.optim.AdamW",
+        "lr": 0.0001,
+        "weight_decay": 0.01
+      },
+      "pad_token_id": 0,
+      "quantizer_decoder": "parallel",
+      "quantizer_embedding_dim": 64,
+      "scheduler": {
+        "_partial_": true,
+        "_target_": "heptokens.models.utils.warmup_cosine_scheduler",
+        "min_lr": 1e-06,
+        "warmup_epochs": 1
+      },
+      "use_position_embedding": true,
+      "use_type_embedding": true,
+      "vocab_size": 262660
+    },
+    "seed": 44,
+    "trainer": {
+      "_target_": "lightning.Trainer",
+      "accelerator": "gpu",
+      "check_val_every_n_epoch": 1,
+      "devices": 6,
+      "gradient_clip_val": null,
+      "limit_train_batches": 1.0,
+      "limit_val_batches": 500,
+      "log_every_n_steps": 50,
+      "max_epochs": 10,
+      "num_nodes": 1,
+      "reload_dataloaders_every_n_epochs": 1,
+      "strategy": "ddp",
+      "val_check_interval": 1.0
+    }
+  },
+  "finished_receipt": {
+    "archive_sha256": "2be1e53caa4eabe65a878d5bbea3d84a1118618585b5a6a6e9b52327869f4b2f",
+    "batch_size_per_gpu": "597",
+    "ensure_masked_physical_object_per_event": "true",
+    "epochs": "10",
+    "exit_code": "0",
+    "expected_global_steps": "541120",
+    "global_batch_size": "3582",
+    "manifest_sha256": "e0bc8c9e9137459437bcfbb8852709b42285072f8ebc6bdbf6dc1584cd0ccfde",
+    "mask_prob": "0.15",
+    "masking_update_sha256": "2cbb72e615432973909d0735c194a9ee847a95273cf47bcc46fc704248ff0934",
+    "num_devices": "6",
+    "pytorch_version": "2.11.0",
+    "seed": "44",
+    "torchaudio_version": "2.11.0",
+    "torchvision_version": "0.26.0"
+  },
+  "full_config_sha256": "00c883f5392e5e63573c52b2ad04ec4e2b2ba8a7ea407a644c03969fbcb73a8b",
+  "job_status_sha256": "5674c446484387bf5eb8dd07d628aa97584d17348878e9380bac3bb90ccf341d",
+  "model_family": "q4",
+  "prepared_manifest_sha256": "e0bc8c9e9137459437bcfbb8852709b42285072f8ebc6bdbf6dc1584cd0ccfde",
+  "pretraining_job": "298.0",
+  "pretraining_seed": 44,
+  "resolved_pixi_lock_sha256": "ba154627f585bf1013dbfbca459589a4a78fd04a3d004f9b84a6b74717507aa9",
+  "run_key": "q4_p44"
+}

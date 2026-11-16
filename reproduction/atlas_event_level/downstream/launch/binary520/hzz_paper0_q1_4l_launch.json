@@ -1,0 +1,69 @@
+{
+  "arms": [
+    "scratch",
+    "finetune",
+    "continuous_finetune"
+  ],
+  "base_runtime_sha256": "9c1f3cc713910d50160b13de459e525c80371c8fe026171d5e88d1c334613d31",
+  "campaign": "hzz_paper0_q1_4l_v1",
+  "cloud_archives": {
+    "continuous.tar.gz": {
+      "sha256": "8ed18532a7b93bde897b708a854b5ca9d55d60e4e9c5e0a17d5a0bf91d0e6fac",
+      "uri": "gs://fcc-teststorage/bucket_results/foundation_pretrain/downstream_data/hzz_paper0_q1_4l_v1/continuous.tar.gz"
+    },
+    "q1.tar.gz": {
+      "sha256": "30536a1e8e8cb10f0f16d1b35e3b26f7bde7a21a858a5f771d189d70bdc5b3a5",
+      "uri": "gs://fcc-teststorage/bucket_results/foundation_pretrain/downstream_data/hzz_paper0_q1_4l_v1/q1.tar.gz"
+    },
+    "runtime.tar.gz": {
+      "sha256": "d5fa5c90e1d267c626833e3cffcee9a215746f06b568f27a5f0b091643d632df",
+      "uri": "gs://fcc-teststorage/bucket_results/foundation_pretrain/downstream_data/hzz_paper0_q1_4l_v1/runtime.tar.gz"
+    }
+  },
+  "credential_path": "/usatlas/u/magaras/condor_google/fccstorageuser.json",
+  "datasets": {
+    "continuous": {
+      "archive": "continuous.tar.gz",
+      "archive_sha256": "8ed18532a7b93bde897b708a854b5ca9d55d60e4e9c5e0a17d5a0bf91d0e6fac",
+      "manifest_sha256": "b6e47d781f7ceb2a9ca781c3b63812088079bc191206058d16ed9bf324376156"
+    },
+    "q1": {
+      "archive": "q1.tar.gz",
+      "archive_sha256": "30536a1e8e8cb10f0f16d1b35e3b26f7bde7a21a858a5f771d189d70bdc5b3a5",
+      "manifest_sha256": "eeb070d1150b12890f74384c63147df62e2c771b93866ede21e5c6b120be178f"
+    }
+  },
+  "file_overlap_detected": true,
+  "files": {
+    "amscgpu_hzz_paper0_q1_4l.sh": "1f35fba3a56b1ce19606c25dba9ec73281887e9fe9e84d715433ea652aced8c0",
+    "amscgpu_hzz_paper0_q1_4l.sub": "e9d49be79c60054ad40a01897c580c00ebbfdcf5bad5143102ad37ff879b5350",
+    "submit_hzz_paper0_q1_4l.py": "73913e44aedd51b56a3af4fe89aaec5939b5d6cebb04a8fa04c81322beb44556"
+  },
+  "identity_overlap_detected": false,
+  "membership_sha256": "8b6e408f46c67444897b6cd6f6da7e0bfda6843430606511b39cc41f4352a7e3",
+  "pretraining_jobs": {
+    "continuous_finetune": "133.0",
+    "finetune": "130.0",
+    "scratch": null
+  },
+  "selection_id": "paper0_atlas_hzz_cms_core_q1_v1",
+  "source_plan_sha256": "6279af55912e85d0b8341b6364783a41b5304ee8ef0c1ad62f774bcf514119ce",
+  "split_counts": {
+    "test": {
+      "background": 1281,
+      "signal": 46424,
+      "total": 47705
+    },
+    "train": {
+      "background": 5802,
+      "signal": 216803,
+      "total": 222605
+    },
+    "val": {
+      "background": 1262,
+      "signal": 46632,
+      "total": 47894
+    }
+  },
+  "submit": "amscgpu_hzz_paper0_q1_4l.sub"
+}

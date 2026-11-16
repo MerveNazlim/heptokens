@@ -1,0 +1,23 @@
+# Historical launch reference only; do not submit unchanged.
+# Fresh pretraining; six GPUs; original seed-42 model/input/objective/runtime.
+# Four separate ordinary jobs share six GPUs through normal scheduler resource matching.
+universe = vanilla
+executable = amscgpu_q4_latest_hier_seed_hierarchical_kin_aux.sh
+arguments = $(ClusterId) $(ProcId)
+environment = "PROJECT_ARCHIVE=heptokens-q4-latest-hier-seed-base-2be1e53c.tar.gz MODEL_CONFIG=foundation_continuous_hierarchical_kin_aux_pretrain CONTINUOUS_ARCHITECTURE=hierarchical GCS_PREPARED_PREFIX=gs://EXAMPLE-PROJECT-BUCKET/bucket_results/foundation_pretrain/data_grl_data16_200m_v1/continuous GCS_OUTPUT_PREFIX=gs://EXAMPLE-PROJECT-BUCKET/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/hierarchical_kin_aux_v1/seed_replicates_v1 EXPECTED_ARCHIVE_SHA256=2be1e53caa4eabe65a878d5bbea3d84a1118618585b5a6a6e9b52327869f4b2f EXPECTED_MANIFEST_SHA256=6e4d519a003efd3fc8e4d79a01d761323dd25dd0affa7b48be01f2dce1a14628 DATASET_MODE=full EXPECTED_TOTAL_ROWS=216095647 EXPECTED_TRAIN_ROWS=194491678 EXPECTED_VAL_ROWS=21603969 EXPECTED_TRAIN_SHARDS=3898 EXPECTED_VAL_SHARDS=440 EXPECTED_EXCLUDED_ROWS=none EXPECTED_INVALID_INPUT_FILE_COUNT=0 SEED=43 EPOCHS=10 BATCH_SIZE=597 NUM_WORKERS=3 NUM_DEVICES=6 TRAINER_STRATEGY=ddp STREAM_BATCH_SIZE=4096 SHUFFLE_BUFFER_SIZE=8192 CONTINUOUS_FEATURE_COLUMN=continuous_features DOWNLOAD_TRAIN_SHARDS=3898 DOWNLOAD_VAL_SHARDS=440 LIMIT_TRAIN_BATCHES=1.0 LIMIT_VAL_BATCHES=500 CHECKPOINT_EVERY_N_STEPS=2000 CHECKPOINT_SYNC_INTERVAL=300 PROJECT_NAME=atlas_event_foundation_pretrain_data16_200m NETWORK_NAME=hierarchical_kin_aux_b597_6gpu_e10_seed43 B300_PIXI_MANIFEST=q4-latest-hier-seed42-pixi.toml B300_PIXI_LOCK=q4-latest-hier-seed42-pixi.lock GROUPING_UPDATE_ARCHIVE=heptokens-q4-latest-hier-seed-hierarchical_kin_aux-original-overlay.tar.gz"
++amscgpu_job = true
+request_gpus = 6
+request_cpus = 48
+request_memory = 96GB
+request_disk = 200GB
+output = logs/amscgpu_q4_latest_hier_seed_hierarchical_kin_aux_p43.$(ClusterId).$(ProcId).out
+error = logs/amscgpu_q4_latest_hier_seed_hierarchical_kin_aux_p43.$(ClusterId).$(ProcId).err
+log = logs/amscgpu_q4_latest_hier_seed_hierarchical_kin_aux_p43.$(ClusterId).$(ProcId).log
+stream_output = True
+stream_error = True
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_input_files = heptokens-q4-latest-hier-seed-base-2be1e53c.tar.gz,heptokens-q4-latest-hier-seed-hierarchical_kin_aux-original-overlay.tar.gz,example-worker-service-account.json,q4-latest-hier-seed42-pixi.toml,q4-latest-hier-seed42-pixi.lock,q4-latest-hier-seed42-nccl.py,q4_latest_hier_seed_validate.py
+transfer_output_files = 
+
+queue 1

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "study_type": "hzz_4l_multiclass",
+  "class_names": ["ggf", "vbf", "vh", "tth", "zz_continuum"],
+  "expected_test_events": 74921,
+  "expected_seeds": [42, 43, 44],
+  "conditions": ["finetune", "scratch", "frozen"],
+  "model_families": ["q1_projected", "q4", "q8", "continuous_flat", "hierarchical_kin_aux"],
+  "study_dir": "output/hzz_4l_multiclass_v1",
+  "notes": [
+    "Use all 45 new selected-sample downstream fits; never substitute predictions from the inclusive benchmark.",
+    "The optional inclusive analysis separates a change in test population from a change in training regime by also evaluating the saved inclusive-trained scores on exactly the selected test events."
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "added_members_sha256": {
+    "configs/plots/hzz_4l_core_multiclass.json": "b6548a342d36d17eaec248e0a0f9de9d2c77507e20e4227509a42d4ce5a8636e",
+    "scripts/collect_hzz_4l_core_results.py": "96d646016f20a09e116e6b05b8dc22ebd4b8f981670bad94b4690f080d0d7856",
+    "scripts/hzz_4l_core_cohort.py": "ad96c814e35a0b944027643727cf8ce53edef05a6b39da8cca86fad86667823e",
+    "scripts/hzz_4l_core_multiclass_study.py": "1bb655fc4f4e0623631af8555e702649d740ab9af71f496d7c49df0890b873ae",
+    "scripts/plot_hzz_4l_core_multiclass.py": "821d432e3ce79b06bedd7822b624379e5ce9d5a583e56add78b4906e7d7980cb"
+  },
+  "changed_original_members": [],
+  "original_plan_sha256": "4417bfa04d9793d7db20c79f7639cfe2a9615d93ef25e2afc02f9b8716ee2277",
+  "original_runtime_sha256": "4ff2583fbe46c885c0b3ae808336fecc0f78aa69312e30ed897d55fc6c673bd0"
+}

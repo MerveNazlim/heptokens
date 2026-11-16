@@ -1,0 +1,10 @@
+defaults:
+  - foundation_grouped_cls_classifier
+  - _self_
+
+freeze_backbone: false
+classifier_hidden_dim: null
+vocab_size: 98820
+max_quantizers: 1
+quantizer_embedding_dim: 32
+object_projection_mode: linear

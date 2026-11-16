@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "study_type": "hzz_4l_multiclass",
+  "class_names": ["ggf", "vbf", "vh", "tth", "zz_continuum"],
+  "expected_test_events": 64403,
+  "expected_seeds": [42, 43, 44],
+  "conditions": ["finetune", "scratch", "frozen"],
+  "model_families": ["q1_projected", "q4", "q8", "continuous_flat", "hierarchical_kin_aux"],
+  "study_dir": "output/hzz_4l_core_multiclass_v1",
+  "notes": [
+    "Paper-0 candidate core, including two disjoint SFOS pairs and m4l > 70 GeV; no narrow Higgs mass window.",
+    "Never substitute results from the original inclusive or multiplicity-only benchmarks."
+  ]
+}

@@ -1,0 +1,92 @@
+JOB PLOTS amscgpu_hzz_4l_core_multiclass_plots.sub
+JOB FIT_00 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_00 RunKey="q1_projected_finetune_p42" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_01 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_01 RunKey="q1_projected_finetune_p43" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_02 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_02 RunKey="q1_projected_finetune_p44" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_03 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_03 RunKey="q1_projected_scratch_s42" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_04 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_04 RunKey="q1_projected_scratch_s43" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_05 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_05 RunKey="q1_projected_scratch_s44" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_06 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_06 RunKey="q1_projected_frozen_p42" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_07 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_07 RunKey="q1_projected_frozen_p43" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_08 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_08 RunKey="q1_projected_frozen_p44" DataKind="q1" DataSha="d31d7c2b8a9e8183f2ea12a519341a1fc5f6cf08789673e0daab4934e4a04e5f"
+JOB FIT_09 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_09 RunKey="q4_finetune_p42" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_10 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_10 RunKey="q4_finetune_p43" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_11 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_11 RunKey="q4_finetune_p44" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_12 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_12 RunKey="q4_scratch_s42" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_13 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_13 RunKey="q4_scratch_s43" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_14 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_14 RunKey="q4_scratch_s44" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_15 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_15 RunKey="q4_frozen_p42" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_16 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_16 RunKey="q4_frozen_p43" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_17 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_17 RunKey="q4_frozen_p44" DataKind="q4" DataSha="41b9247db065254904fe2690481500806b4c9df6ae75811f875f56fadeebc10c"
+JOB FIT_18 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_18 RunKey="q8_finetune_p42" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_19 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_19 RunKey="q8_finetune_p43" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_20 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_20 RunKey="q8_finetune_p44" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_21 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_21 RunKey="q8_scratch_s42" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_22 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_22 RunKey="q8_scratch_s43" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_23 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_23 RunKey="q8_scratch_s44" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_24 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_24 RunKey="q8_frozen_p42" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_25 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_25 RunKey="q8_frozen_p43" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_26 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_26 RunKey="q8_frozen_p44" DataKind="q8" DataSha="ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a"
+JOB FIT_27 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_27 RunKey="continuous_flat_finetune_p42" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_28 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_28 RunKey="continuous_flat_finetune_p43" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_29 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_29 RunKey="continuous_flat_finetune_p44" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_30 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_30 RunKey="continuous_flat_scratch_s42" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_31 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_31 RunKey="continuous_flat_scratch_s43" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_32 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_32 RunKey="continuous_flat_scratch_s44" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_33 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_33 RunKey="continuous_flat_frozen_p42" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_34 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_34 RunKey="continuous_flat_frozen_p43" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_35 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_35 RunKey="continuous_flat_frozen_p44" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_36 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_36 RunKey="hierarchical_kin_aux_finetune_p42" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_37 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_37 RunKey="hierarchical_kin_aux_finetune_p43" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_38 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_38 RunKey="hierarchical_kin_aux_finetune_p44" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_39 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_39 RunKey="hierarchical_kin_aux_scratch_s42" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_40 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_40 RunKey="hierarchical_kin_aux_scratch_s43" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_41 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_41 RunKey="hierarchical_kin_aux_scratch_s44" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_42 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_42 RunKey="hierarchical_kin_aux_frozen_p42" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_43 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_43 RunKey="hierarchical_kin_aux_frozen_p43" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+JOB FIT_44 amscgpu_hzz_4l_core_multiclass_fit.sub
+VARS FIT_44 RunKey="hierarchical_kin_aux_frozen_p44" DataKind="continuous" DataSha="bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+PARENT FIT_00 FIT_01 FIT_02 FIT_03 FIT_04 FIT_05 FIT_06 FIT_07 FIT_08 FIT_09 FIT_10 FIT_11 FIT_12 FIT_13 FIT_14 FIT_15 FIT_16 FIT_17 FIT_18 FIT_19 FIT_20 FIT_21 FIT_22 FIT_23 FIT_24 FIT_25 FIT_26 FIT_27 FIT_28 FIT_29 FIT_30 FIT_31 FIT_32 FIT_33 FIT_34 FIT_35 FIT_36 FIT_37 FIT_38 FIT_39 FIT_40 FIT_41 FIT_42 FIT_43 FIT_44 CHILD PLOTS

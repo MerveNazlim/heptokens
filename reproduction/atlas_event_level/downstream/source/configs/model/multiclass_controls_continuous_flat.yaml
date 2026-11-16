@@ -1,0 +1,11 @@
+defaults:
+  - foundation_continuous_flat_matched_multiclass
+  - _self_
+
+_target_: heptokens.models.foundation_multiclass_controls.LitContinuousMulticlassControl
+control_mode: scratch
+n_classes: 5
+class_weights: null
+freeze_backbone: false
+classifier_hidden_dim: null
+use_role_embedding: true

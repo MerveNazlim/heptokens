@@ -1,0 +1,21 @@
+---
+_target_: heptokens.data.token_parquet.GroupedTokenParquetClassificationModule
+
+prepared_dir:
+seed: 42
+max_sequences:
+stream_batch_size: 4096
+shuffle_buffer_size: 8192
+
+n_classes: 2
+num_workers: 3
+batch_size: 256
+pin_memory: true
+persistent_workers: false
+multiprocessing_context:
+transforms:
+
+token_column:
+mask_column:
+type_column:
+label_column: label

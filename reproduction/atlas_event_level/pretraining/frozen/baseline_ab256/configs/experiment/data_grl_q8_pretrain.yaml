@@ -1,0 +1,13 @@
+# @package _global_
+defaults:
+  - override /datamodule: token_parquet_data_grl_q8_pretrain
+  - override /model: foundation_grouped_q8_data_grl_pretrain
+  - override /callbacks: pretrain
+
+seed: 42
+project_name: atlas_event_foundation_pretrain_data_grl
+network_name: grouped_cls_q8_data_grl_b448_8gpu_e10_seed42
+trainer:
+  max_epochs: 10
+  limit_val_batches: 500
+
