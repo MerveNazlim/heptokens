@@ -1,12 +1,11 @@
-# heptokens: object tokenizers and event Parquet
+# heptokens: object tokenizers and event foundation models
 
 Train one VQ-VAE/RVQ tokenizer per object type, evaluate its reconstruction, and
 convert H5 events into grouped Q1, Q8 and continuous Parquet datasets.
 
-This guide covers the tokenizer and Parquet code in the event_level branch.
-For the executed ATLAS event-foundation runs, see the
-[archived pretraining and four-lepton workflows](reproduction/atlas_event_level/README.md).
-Those are separate, versioned sources and do not change this guide's tokenizer or Parquet workflow.
+The prepared Parquets also feed [parallel Q8 and flat continuous event
+models](#6-train-the-event-foundation-models) for masked pretraining and
+five-class four-lepton classification.
 
 ## Setup
 
@@ -260,6 +259,61 @@ rewriting data. Place each output manifest next to its train/val directories:
 The prepared directories are $WORK/prepared/q1, q8 and continuous. Tokenizer
 training splits, conversion train/validation membership and downstream test
 selection are separate. Do not use capped smoke outputs for production.
+
+## 6. Train the event foundation models
+
+From the repository root, set `ATLAS_PREPARED_DIR` to the absolute path to
+the prepared Q8 or continuous shards, and `ATLAS_OUTPUT_DIR` to a new output
+location. Choose the matching experiment:
+
+    pixi run python scripts/train.py experiment=event_foundation_q8
+    pixi run python scripts/train.py experiment=event_foundation_continuous
+
+These are the parallel Q8 and flat continuous Data16 presets. Both use
+10 epochs and 448 events per GPU on eight GPUs. The presets default to seed
+42; use `seed=43` or `seed=44` for the other runs. The continuous preset
+keeps the data-loader seed at 42. The models are in
+[`src/heptokens/models/`](src/heptokens/models/) and the presets in
+[`configs/experiment/`](configs/experiment/).
+
+The original pretraining runtime was `heptokens-google-data-grl-b300.tar.gz`
+(SHA-256 `ab256c9feb6aab2195570a67f5ede231f95ed5bd26dad329407b6a2b8f88d558`).
+For exact historical reproduction, use that archive and its executed B300
+environment lock (SHA-256 `ba154627f585bf1013dbfbca459589a4a78fd04a3d004f9b84a6b74717507aa9`),
+rather than the current repository lock.
+
+## 7. Fit the reconstructed four-lepton benchmark
+
+The five-class study uses the original ggF, VBF, VH, top-associated Higgs and
+continuum ZZ splits: 300,279 train, 64,264 validation and 64,403 test events.
+It requires a reconstructed four-electron/muon candidate: lepton
+`pT > 10 GeV` (leading `pT > 20 GeV`), `|eta| < 2.47` for electrons and
+`|eta| < 2.5` for muons, two disjoint same-flavour opposite-sign pairs,
+`40 < mZ1 < 120 GeV`, `12 < mZ2 < 120 GeV`, pairwise `deltaR > 0.02`,
+all opposite-sign pair masses above 4 GeV, and `m4l > 70 GeV`.
+No narrow Higgs-mass window is applied. Taus remain model inputs.
+
+The [benchmark config](configs/downstream/hzz_4l_core.json) lists the pinned
+data and checkpoint artifacts. Unpack `common.tar.gz` and the matching
+`q8.tar.gz` or `continuous.tar.gz` into one dataset root. The trainer reads
+the existing selected Parquets and canonical batch schedules; it does not
+retokenize, rewrite shards or resplit events.
+
+    pixi run python scripts/train_hzz_4l.py \
+      --dataset-root "$DATASET" --run-key q8_finetune_p42 \
+      --source-dir "$SOURCE" --output-dir "$OUT"
+
+The run-key prefix is `q8` or `continuous_flat`. Fine-tune and frozen fits
+use `finetune_p42` or `frozen_p42` (also 43 and 44), with classifier seed 42.
+Stage the source in `$SOURCE` as `checkpoint.ckpt`, `config.yaml` and
+`status.txt`, plus `vocabulary.parquet` when listed. Scratch fits use
+`scratch_s42` (also 43 and 44) and omit `--source-dir`. Add
+`--preflight-only` to check one batch without training.
+
+Fits use one GPU, ten epochs, batch size 256, and a linear five-class head.
+Checkpoint selection uses validation macro-AUC; predictions are exported for
+the held-out test events. The config also pins the original DAG 521 runtime
+for exact historical replay.
 
 ## Other exporters
 
