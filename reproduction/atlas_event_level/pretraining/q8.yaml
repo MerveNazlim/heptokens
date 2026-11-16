@@ -1,0 +1,120 @@
+# Executed seed-42 settings; machine paths are portable. See ../README.md.
+seed: 42
+project_name: atlas_event_foundation_pretrain_data16_200m
+network_name: q8_b448_8gpu_e10_seed${seed}
+output_dir: ${oc.env:ATLAS_OUTPUT_DIR}
+ckpt_path: null
+weight_ckpt_path: null
+save_test_preds: false
+precision: medium
+compile: null
+tags: null
+full_resume: false
+ckpt_flag: last.ckpt
+trainer:
+  _target_: lightning.Trainer
+  max_epochs: 10
+  enable_progress_bar: true
+  check_val_every_n_epoch: 1
+  accelerator: gpu
+  devices: 8
+  num_nodes: 1
+  default_root_dir: ${full_path}
+  reload_dataloaders_every_n_epochs: 1
+  val_check_interval: 1.0
+  limit_val_batches: 500
+  gradient_clip_val: null
+  limit_train_batches: 1.0
+  log_every_n_steps: 50
+  strategy: ddp
+logger:
+  _target_: lightning.pytorch.loggers.wandb.WandbLogger
+  offline: true
+  id: null
+  log_model: false
+  tags: null
+  project: ${project_name}
+  name: ${network_name}
+  save_dir: ${full_path}
+  resume: false
+root_dir: .
+full_path: ${output_dir}/${project_name}/${network_name}/
+callbacks:
+  model_summary:
+    _target_: lightning.pytorch.callbacks.RichModelSummary
+    max_depth: 2
+  lr_monitor:
+    _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: step
+  activation_monitor:
+    _target_: heptokens.callbacks.monitor.ActivationMonitor
+    logging_interval: 200
+    layer_regex:
+    - .*\.sa.fn$
+    - .*\.ca.fn$
+    - .*\.ff.fn$
+    - .*\.gate$
+    - .*encoder.layers\.\d+$
+    - .*decoder.layers\.\d+$
+    param_regex:
+    - .*\.gate$
+  checkpoint_per_epoch:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${full_path}/checkpoints
+    filename: last
+    enable_version_counter: false
+    auto_insert_metric_name: false
+  live_metrics:
+    _target_: heptokens.callbacks.monitor.LiveMetricsCSV
+    path: ${full_path}/live_metrics.csv
+    logging_interval: 100
+datamodule:
+  _target_: heptokens.data.token_parquet.TokenParquetPretrainModule
+  prepared_dir: ${oc.env:ATLAS_PREPARED_DIR}
+  train_parquet_files: null
+  val_parquet_files: null
+  parquet_files: null
+  train_frac: 0.9
+  val_frac: 0.1
+  seed: ${seed}
+  max_sequences: null
+  stream_batch_size: 4096
+  shuffle_buffer_size: 8192
+  n_classes: 1
+  num_workers: 3
+  batch_size: 448
+  pin_memory: true
+  persistent_workers: false
+  multiprocessing_context: null
+  transforms: null
+  token_column: null
+  mask_column: null
+  type_column: null
+  include_tokens: true
+model:
+  _target_: heptokens.models.foundation_grouped.LitGroupedMaskedSequenceModel
+  hidden_dim: 256
+  num_heads: 8
+  num_layers: 4
+  dropout: 0.1
+  max_seq_length: 256
+  vocab_size: 131588
+  max_quantizers: 8
+  quantizer_embedding_dim: 32
+  num_type_ids: 12
+  mask_token_id: 3
+  pad_token_id: 0
+  mask_prob: 0.15
+  use_type_embedding: true
+  use_position_embedding: true
+  learning_rate: 0.0001
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    lr: 0.0001
+    weight_decay: 0.01
+  scheduler:
+    _target_: heptokens.models.utils.warmup_cosine_scheduler
+    _partial_: true
+    warmup_epochs: 1
+    min_lr: 1.0e-06

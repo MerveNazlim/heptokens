@@ -1,8 +1,0 @@
-defaults:
-  - pretrain
-  - _self_
-
-masking_audit:
-  _target_: heptokens.callbacks.monitor.MaskingPolicyAudit
-  path: ${full_path}/masking_audit.csv
-  logging_interval: 100

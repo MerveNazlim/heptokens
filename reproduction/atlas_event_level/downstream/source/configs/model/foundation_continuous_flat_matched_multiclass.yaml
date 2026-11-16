@@ -1,7 +1,0 @@
-defaults:
-  - foundation_continuous_hierarchical_kin_aux_multiclass
-  - _self_
-
-_target_: heptokens.models.foundation_continuous_matched_multiclass.LitMatchedContinuousMulticlass
-architecture: flat
-feature_grouping: schema

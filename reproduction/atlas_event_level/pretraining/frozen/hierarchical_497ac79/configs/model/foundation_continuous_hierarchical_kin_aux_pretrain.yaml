@@ -1,7 +1,0 @@
-defaults:
-  - foundation_continuous_hierarchical_pretrain
-  - _self_
-
-# All current inputs; two groups except for jets/tracks, which retain three.
-# Transformer, masking, optimizer and scheduler are unchanged.
-feature_grouping: kinematics_auxiliary_v1

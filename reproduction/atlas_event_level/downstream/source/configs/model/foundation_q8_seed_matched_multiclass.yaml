@@ -1,9 +1,0 @@
-defaults:
-  - foundation_grouped_cls_classifier
-  - _self_
-
-freeze_backbone: false
-max_quantizers: 8
-quantizer_embedding_dim: 32
-object_projection_mode: linear
-classifier_hidden_dim: null
