@@ -1,11 +1,11 @@
-# heptokens: object tokenizers and event Parquet
+# heptokens: object tokenizers and event foundation models
 
 Train one VQ-VAE/RVQ tokenizer per object type, evaluate its reconstruction, and
 convert H5 events into grouped Q1, Q8 and continuous Parquet datasets.
 
-This guide covers the tokenizer and Parquet code in the event_level branch.
-Grouped foundation-model implementations are not included here yet; pretraining
-and fine-tuning will be documented when those models are integrated.
+The prepared Parquets also feed [parallel Q8 and flat continuous event
+models](#6-train-the-event-foundation-models) for masked pretraining and
+five-class four-lepton classification.
 
 ## Setup
 
@@ -259,6 +259,117 @@ rewriting data. Place each output manifest next to its train/val directories:
 The prepared directories are $WORK/prepared/q1, q8 and continuous. Tokenizer
 training splits, conversion train/validation membership and downstream test
 selection are separate. Do not use capped smoke outputs for production.
+
+## 6. Train the event foundation models
+
+Use the prepared `train/` and `val/` shards from sections 4–5. Run from
+the repository root. Set `WORK` to an absolute path and choose a fresh
+output location:
+
+    WORK=/work/heptokens
+    export ATLAS_OUTPUT_DIR="$WORK/results/event_pretraining"
+
+    # Parallel Q8: use the 131,588-entry Data16 vocabulary.
+    ATLAS_PREPARED_DIR="$WORK/prepared/q8" \
+      pixi run python scripts/train.py experiment=event_foundation_q8 seed=42
+
+    # Flat continuous: use the preprocessed feature columns, not decoded Q8.
+    ATLAS_PREPARED_DIR="$WORK/prepared/continuous" \
+      pixi run python scripts/train.py experiment=event_foundation_continuous seed=42
+
+These are the parallel Q8 and flat continuous Data16 presets. Both use
+10 epochs and 448 events per GPU on eight GPUs. The presets default to seed
+42; use `seed=43` or `seed=44` for the other runs. The continuous preset
+keeps the data-loader seed at 42. Append `--cfg job --resolve` to inspect
+either resolved configuration without training. Each run writes
+`full_config.yaml` and `checkpoints/last.ckpt` under its own run directory
+inside `ATLAS_OUTPUT_DIR`. The models are in
+[`src/heptokens/models/`](src/heptokens/models/) and the presets in
+[`configs/experiment/`](configs/experiment/).
+
+The original pretraining runtime was `heptokens-google-data-grl-b300.tar.gz`
+(SHA-256 `ab256c9feb6aab2195570a67f5ede231f95ed5bd26dad329407b6a2b8f88d558`).
+For exact historical reproduction, use that archive and its executed B300
+environment lock (SHA-256 `ba154627f585bf1013dbfbca459589a4a78fd04a3d004f9b84a6b74717507aa9`),
+rather than the current repository lock.
+
+## 7. Fit the reconstructed four-lepton benchmark
+
+The five-class study uses the original ggF, VBF, VH, top-associated Higgs and
+continuum ZZ splits: 300,279 train, 64,264 validation and 64,403 test events.
+It requires a reconstructed four-electron/muon candidate: lepton
+`pT > 10 GeV` (leading `pT > 20 GeV`), `|eta| < 2.47` for electrons and
+`|eta| < 2.5` for muons, two disjoint same-flavour opposite-sign pairs,
+`40 < mZ1 < 120 GeV`, `12 < mZ2 < 120 GeV`, pairwise `deltaR > 0.02`,
+all opposite-sign pair masses above 4 GeV, and `m4l > 70 GeV`.
+No narrow Higgs-mass window is applied. Taus remain model inputs.
+
+### Stage the benchmark inputs
+
+The [benchmark config](configs/downstream/hzz_4l_core.json) lists the pinned
+dataset archives under `dataset.archive_prefix` and the pretrained files
+under `sources`. If staging from GCS, use an account with read access.
+Verify the archive SHA-256 values against `dataset.archive_sha256` before
+extracting. This example assumes the downloaded archives and seed-42 Q8
+source files are already under `$WORK/archives`:
+
+    WORK=/work/heptokens
+    ARCHIVES="$WORK/archives/hzz_4l"
+    DATASET="$WORK/prepared/hzz_4l_q8"
+    RAW_SOURCE="$WORK/archives/pretrained/q8_p42"
+    SOURCE="$WORK/sources/q8_p42"
+    mkdir -p "$DATASET" "$SOURCE"
+    tar -xzf "$ARCHIVES/common.tar.gz" -C "$DATASET"
+    tar -xzf "$ARCHIVES/q8.tar.gz" -C "$DATASET"
+    cp "$RAW_SOURCE/last.ckpt" "$SOURCE/checkpoint.ckpt"
+    cp "$RAW_SOURCE/full_config.yaml" "$SOURCE/config.yaml"
+    cp "$RAW_SOURCE/job_status.txt" "$SOURCE/status.txt"
+    cp "$RAW_SOURCE/part-group-00000-00000.parquet" "$SOURCE/vocabulary.parquet"
+
+The last file is the vocabulary shard pinned under `sources.q8_p42`; it
+lets the trainer verify the original Q8 code-to-ID mapping. For continuous,
+unpack `continuous.tar.gz` instead of `q8.tar.gz`, use the
+`continuous_flat_p42` source record and omit the vocabulary shard. In both
+cases, the dataset root contains `selection/`, `canonical_index/`, and
+the chosen representation directory. The trainer reads these Parquets
+without rewriting them or resplitting events.
+
+### Check and run a fit
+
+Use the pinned checkpoint and its original config and status, not a new
+checkpoint from the pretraining example. Start with the CPU preflight:
+
+    pixi run python scripts/train_hzz_4l.py \
+      --dataset-root "$DATASET" --run-key q8_finetune_p42 \
+      --source-dir "$SOURCE" --preflight-only
+
+For a full fit, expose exactly one CUDA GPU and use an output directory
+that does not yet exist:
+
+    OUT="$WORK/results/hzz_4l/q8_finetune_p42"
+    pixi run python scripts/train_hzz_4l.py \
+      --dataset-root "$DATASET" --run-key q8_finetune_p42 \
+      --source-dir "$SOURCE" --output-dir "$OUT"
+
+For the flat input, use `continuous_flat_finetune_p42` with the continuous
+dataset and source. For a frozen backbone, substitute `frozen_p42` and
+choose a different output directory; it uses the same source checkpoint.
+For a scratch fit, use `scratch_s42` and omit `--source-dir`:
+
+    pixi run python scripts/train_hzz_4l.py \
+      --dataset-root "$DATASET" --run-key q8_scratch_s42 \
+      --output-dir "$WORK/results/hzz_4l/q8_scratch_s42"
+
+Seeds 43 and 44 follow the same naming. Fine-tune and frozen fits vary the
+pretraining checkpoint and hold classifier seed fixed at 42. Scratch fits
+vary the classifier seed.
+
+Fits use ten epochs, batch size 256, and a linear five-class head. Outputs
+include `checkpoints/best.ckpt` (chosen by validation macro-AUC),
+`test_evaluation/test_predictions.npz` and
+`test_evaluation/evaluation_summary.json` for the held-out test events.
+For exact historical replay, the original DAG 521 `runtime.tar.gz` is in
+the same dataset archive prefix; its SHA-256 is in the benchmark config.
 
 ## Other exporters
 

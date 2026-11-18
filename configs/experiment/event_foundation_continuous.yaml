@@ -1,0 +1,46 @@
+# @package _global_
+defaults:
+  - override /callbacks: pretrain
+  - override /datamodule: token_parquet_continuous_pretrain
+  - override /model: foundation_continuous_flat_pretrain
+  - _self_
+
+# Flat continuous, Data16 mixed-corpus pretraining (133.0, 137.0, 137.1).
+seed: 42
+project_name: atlas_event_foundation_pretrain_data16_200m
+network_name: continuous_flat_b448_8gpu_e10_seed${seed}
+output_dir: ${oc.env:ATLAS_OUTPUT_DIR}
+logger:
+  offline: true
+datamodule:
+  prepared_dir: ${oc.env:ATLAS_PREPARED_DIR}
+  # The three original runs changed the model seed, not the streamer seed.
+  seed: 42
+  batch_size: 448
+trainer:
+  accelerator: gpu
+  devices: 8
+  strategy: ddp
+  max_epochs: 10
+  check_val_every_n_epoch: 1
+  val_check_interval: 1.0
+  limit_train_batches: 1.0
+  limit_val_batches: 500
+  log_every_n_steps: 20
+callbacks:
+  checkpoint_per_epoch:
+    save_on_exception: true
+  live_metrics:
+    _target_: heptokens.callbacks.monitor.LiveMetricsCSV
+    path: ${full_path}/live_metrics.csv
+    logging_interval: 100
+  periodic_checkpoint:
+    _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${full_path}/checkpoints
+    filename: step-{step}
+    every_n_train_steps: 2000
+    save_top_k: 1
+    save_on_exception: true
+    save_weights_only: false
+    auto_insert_metric_name: false
+    enable_version_counter: false

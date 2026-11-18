@@ -15,7 +15,6 @@ pad_token_id: 0
 mask_prob: 0.15
 use_type_embedding: true
 use_position_embedding: true
-quantizer_decoder: parallel
 learning_rate: 1.0e-4
 
 optimizer:

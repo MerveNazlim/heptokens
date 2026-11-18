@@ -1,0 +1,200 @@
+{
+  "selection_id": "hzz_4l_paper0_core_v1",
+  "class_names": [
+    "ggf",
+    "vbf",
+    "vh",
+    "tth",
+    "zz_continuum"
+  ],
+  "split_counts": {
+    "train": [
+      216803,
+      22480,
+      24240,
+      30954,
+      5802
+    ],
+    "val": [
+      46632,
+      4734,
+      4991,
+      6645,
+      1262
+    ],
+    "test": [
+      46424,
+      4826,
+      5261,
+      6611,
+      1281
+    ]
+  },
+  "protocol": {
+    "batch_size": 256,
+    "epochs": 10,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.01,
+    "warmup_epochs": 1,
+    "min_lr": 0.000001,
+    "updates_per_epoch": 1172,
+    "dropped_rows_per_epoch": 247
+  },
+  "dataset": {
+    "archive_prefix": "gs://fcc-teststorage/bucket_results/foundation_pretrain/downstream_data/hzz_4l_core_multiclass_v1",
+    "archive_sha256": {
+      "common.tar.gz": "458b2a8625f28135020ff043bdc99f2d2e22f2cac7eccd39dcd3afd3f00b5112",
+      "q8.tar.gz": "ee9a5f2cde951ebaceabd87e250e78b8f6a5b53e42e485423dc162fc79dc5c0a",
+      "continuous.tar.gz": "bb8874a512dbc4e066cf86da9aecfb5fce7d65df892c1a23d043388dfdb44eca"
+    },
+    "manifest_sha256": {
+      "selection/selection_receipt.json": "ac9f959d46954b5916b8fca62c2c14564d7793831fdfe85ef651a4cc2fc382a0",
+      "selection/membership.npz": "b9f2ac8bba919c9ace97679a4dabd37b3dc39560df76e73348dfc0214288f3c6",
+      "canonical_index/index_manifest.json": "27067cfca79ea990a171cdcd8d80be77fd6ce290096e84d6362ee8420c64ffeb",
+      "canonical_index/schedule_campaign.json": "d0720d728ae850e54c134136c6276f22c8ce2db8657caa20bcd53baa5f40c761",
+      "q8/manifest.json": "23565c3926044b311ad5a587bc5c5a29b3df1e4f27c9a3b1c348d6e179b77493",
+      "q8/selection_view.json": "e131857f7404d87288a0adcca16c1edb6a60c8afbafb8dff2e46b037c4ae805a",
+      "continuous/manifest.json": "47da1b4e8ba43fdc3c68efad7b7835e86afa4be07452e2e3a919ddb77440fac3",
+      "continuous/selection_view.json": "a4c046f754dd2ae1ba7c0990736f215f702a883d9fc34ec4a30fe5a3834cc0cf"
+    }
+  },
+  "archived_runtime_sha256": "413caa8972a69a4bbac5f4a8460d66d355e03b90bec128b7f13945cfa8db0c62",
+  "representations": {
+    "continuous_flat": {
+      "configuration_id": "continuous_flat_v1_schema",
+      "data_kind": "continuous",
+      "expected_hparams": {
+        "architecture": "flat",
+        "dropout": 0.1,
+        "feature_grouping": "schema",
+        "hidden_dim": 256,
+        "max_seq_length": 256,
+        "num_heads": 8,
+        "num_layers": 4,
+        "num_type_ids": 12,
+        "use_position_embedding": true,
+        "use_type_embedding": true
+      },
+      "role_embedding": "on"
+    },
+    "q8": {
+      "configuration_id": "q8_parallel_v1_linear_8x32",
+      "data_kind": "q8",
+      "expected_hparams": {
+        "dropout": 0.1,
+        "hidden_dim": 256,
+        "max_quantizers": 8,
+        "max_seq_length": 256,
+        "num_heads": 8,
+        "num_layers": 4,
+        "num_type_ids": 12,
+        "object_projection_mode": "linear",
+        "quantizer_embedding_dim": 32,
+        "use_position_embedding": true,
+        "use_type_embedding": true,
+        "vocab_size": 131588
+      }
+    }
+  },
+  "sources": {
+    "continuous_flat_p42": {
+      "checkpoint": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_133_proc_0/atlas_event_foundation_pretrain_data16_200m/continuous_flat_b448_8gpu_e10_seed42/checkpoints/last.ckpt",
+      "checkpoint_sha256": "62e4d6cc4f66d0ea3ff99805169697e9e2ed67424751de118eafcf20e1414e13",
+      "model_family": "continuous_flat",
+      "pretrain_config": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_133_proc_0/atlas_event_foundation_pretrain_data16_200m/continuous_flat_b448_8gpu_e10_seed42/full_config.yaml",
+      "pretrain_config_sha256": "1768200db648af15704664044a31e956ab68f1a4e5f62c83a2a8583736387136",
+      "pretrain_seed": 42,
+      "pretrain_status": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_133_proc_0/job_status.txt",
+      "pretrain_status_sha256": "ac7bda220349e62339533ac5bf6b4d0b66c6de094836ac10ca4ef9ad6011b67a",
+      "pretraining_batch_size": 448,
+      "pretraining_data_seed": 42,
+      "pretraining_global_batch_size": 3584,
+      "pretraining_job": "133.0",
+      "pretraining_num_devices": 8
+    },
+    "continuous_flat_p43": {
+      "checkpoint": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_137_proc_0/atlas_event_foundation_pretrain_data16_200m/continuous_flat_b448_8gpu_e10_seed43/checkpoints/last.ckpt",
+      "checkpoint_sha256": "649568039fdff1875d259a5d7811de468bc679876d4bc69db9edd2ed351b74a4",
+      "model_family": "continuous_flat",
+      "pretrain_config": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_137_proc_0/atlas_event_foundation_pretrain_data16_200m/continuous_flat_b448_8gpu_e10_seed43/full_config.yaml",
+      "pretrain_config_sha256": "e86eeaddff272ca3b30b4305acaa0b1a8dcdd8f333d234eda320fa9bdfb7dae0",
+      "pretrain_seed": 43,
+      "pretrain_status": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_137_proc_0/job_status.txt",
+      "pretrain_status_sha256": "f4e600cb92aeaf26ead6e164e64946be8f70cc8d9a725b7045ec146a2bca553d",
+      "pretraining_batch_size": 448,
+      "pretraining_data_seed": 42,
+      "pretraining_global_batch_size": 3584,
+      "pretraining_job": "137.0",
+      "pretraining_num_devices": 8
+    },
+    "continuous_flat_p44": {
+      "checkpoint": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_137_proc_1/atlas_event_foundation_pretrain_data16_200m/continuous_flat_b448_8gpu_e10_seed44/checkpoints/last.ckpt",
+      "checkpoint_sha256": "5f2090ee5cb81b8dd6315a7f480efe285bd4af516d58866cf3407583e81a4b76",
+      "model_family": "continuous_flat",
+      "pretrain_config": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_137_proc_1/atlas_event_foundation_pretrain_data16_200m/continuous_flat_b448_8gpu_e10_seed44/full_config.yaml",
+      "pretrain_config_sha256": "b8f049530bd971aef285c272d4b315fa69b1b98e3557430822315ef6c3c9ae97",
+      "pretrain_seed": 44,
+      "pretrain_status": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/continuous_full/cluster_137_proc_1/job_status.txt",
+      "pretrain_status_sha256": "5e68edf3e58052b355e7081f98ab6e0291571ff7c0cc2846454de69de10e05be",
+      "pretraining_batch_size": 448,
+      "pretraining_data_seed": 42,
+      "pretraining_global_batch_size": 3584,
+      "pretraining_job": "137.1",
+      "pretraining_num_devices": 8
+    },
+    "q8_p42": {
+      "checkpoint": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_131_proc_0/atlas_event_foundation_pretrain_data16_200m/q8_b448_8gpu_e10_seed42/checkpoints/last.ckpt",
+      "checkpoint_sha256": "5dc139f202bf0fa5e357550e1400fe8f2ed809abe60eb67ccf349974304828f3",
+      "model_family": "q8",
+      "pretrain_config": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_131_proc_0/atlas_event_foundation_pretrain_data16_200m/q8_b448_8gpu_e10_seed42/full_config.yaml",
+      "pretrain_config_sha256": "9bd6d64ed8efd132707f76b5ace99921198665807aa45665e629dc0a412687b4",
+      "pretrain_seed": 42,
+      "pretrain_status": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_131_proc_0/job_status.txt",
+      "pretrain_status_sha256": "157e1fde978ba758e0452208944eebd15a7b7cf99b3b699296c6cde017c1a020",
+      "pretraining_batch_size": 448,
+      "pretraining_data_seed": 42,
+      "pretraining_global_batch_size": 3584,
+      "pretraining_job": "131.0",
+      "pretraining_manifest_sha256": "20ae12ae48c8420e0605159ddd67430560de38f48194caf2001673f217cf7829",
+      "pretraining_num_devices": 8,
+      "pretraining_vocabulary_shard": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1/q8/train/part-group-00000-00000.parquet",
+      "pretraining_vocabulary_shard_sha256": "4efe22fefb79f9307a79e8d2d9658f3fd7e89a2fafaece2ed18121988d263a67"
+    },
+    "q8_p43": {
+      "checkpoint": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_136_proc_0/atlas_event_foundation_pretrain_data16_200m/q8_b448_8gpu_e10_seed43/checkpoints/last.ckpt",
+      "checkpoint_sha256": "ecf3c35027d5b344d6ba4a6e9227a39a70356703841359da3103fc20f69fc7fd",
+      "model_family": "q8",
+      "pretrain_config": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_136_proc_0/atlas_event_foundation_pretrain_data16_200m/q8_b448_8gpu_e10_seed43/full_config.yaml",
+      "pretrain_config_sha256": "bc1c2bfc5d4135a1251ee764ae6039fc1a736d919c5e876360c882cec52f2ba3",
+      "pretrain_seed": 43,
+      "pretrain_status": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_136_proc_0/job_status.txt",
+      "pretrain_status_sha256": "4978c6e22b4a5dc9798ed4ac7ea963079a26b2128c75acceba6669d062d59ee0",
+      "pretraining_batch_size": 448,
+      "pretraining_data_seed": 43,
+      "pretraining_global_batch_size": 3584,
+      "pretraining_job": "136.0",
+      "pretraining_manifest_sha256": "20ae12ae48c8420e0605159ddd67430560de38f48194caf2001673f217cf7829",
+      "pretraining_num_devices": 8,
+      "pretraining_vocabulary_shard": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1/q8/train/part-group-00000-00000.parquet",
+      "pretraining_vocabulary_shard_sha256": "4efe22fefb79f9307a79e8d2d9658f3fd7e89a2fafaece2ed18121988d263a67"
+    },
+    "q8_p44": {
+      "checkpoint": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_136_proc_1/atlas_event_foundation_pretrain_data16_200m/q8_b448_8gpu_e10_seed44/checkpoints/last.ckpt",
+      "checkpoint_sha256": "a7652c820b46a751e27ce5848d90aed3cd0ad7320dbe5f055a5702f67b17f865",
+      "model_family": "q8",
+      "pretrain_config": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_136_proc_1/atlas_event_foundation_pretrain_data16_200m/q8_b448_8gpu_e10_seed44/full_config.yaml",
+      "pretrain_config_sha256": "921015c0502bc2d1bac57a0456814062077b2db391a83ae2f14e44afc9b71704",
+      "pretrain_seed": 44,
+      "pretrain_status": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1_pretrain/q8_full/cluster_136_proc_1/job_status.txt",
+      "pretrain_status_sha256": "ab6a81f150652cc59ee63090985ba816d6af0b325fbfb2c6df2ca6d11a213d9e",
+      "pretraining_batch_size": 448,
+      "pretraining_data_seed": 44,
+      "pretraining_global_batch_size": 3584,
+      "pretraining_job": "136.1",
+      "pretraining_manifest_sha256": "20ae12ae48c8420e0605159ddd67430560de38f48194caf2001673f217cf7829",
+      "pretraining_num_devices": 8,
+      "pretraining_vocabulary_shard": "gs://fcc-teststorage/bucket_results/foundation_pretrain/data_grl_data16_200m_v1/q8/train/part-group-00000-00000.parquet",
+      "pretraining_vocabulary_shard_sha256": "4efe22fefb79f9307a79e8d2d9658f3fd7e89a2fafaece2ed18121988d263a67"
+    }
+  }
+}

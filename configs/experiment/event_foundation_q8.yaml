@@ -1,0 +1,35 @@
+# @package _global_
+defaults:
+  - override /callbacks: pretrain
+  - override /datamodule: token_parquet_pretrain
+  - override /model: foundation_grouped_pretrain
+  - _self_
+
+# Parallel RVQ-8, Data16 mixed-corpus pretraining (131.0, 136.0, 136.1).
+seed: 42
+project_name: atlas_event_foundation_pretrain_data16_200m
+network_name: q8_b448_8gpu_e10_seed${seed}
+output_dir: ${oc.env:ATLAS_OUTPUT_DIR}
+logger:
+  offline: true
+datamodule:
+  prepared_dir: ${oc.env:ATLAS_PREPARED_DIR}
+  seed: ${seed}
+  batch_size: 448
+model:
+  vocab_size: 131588
+trainer:
+  accelerator: gpu
+  devices: 8
+  strategy: ddp
+  max_epochs: 10
+  check_val_every_n_epoch: 1
+  val_check_interval: 1.0
+  limit_train_batches: 1.0
+  limit_val_batches: 500
+  log_every_n_steps: 50
+callbacks:
+  live_metrics:
+    _target_: heptokens.callbacks.monitor.LiveMetricsCSV
+    path: ${full_path}/live_metrics.csv
+    logging_interval: 100
